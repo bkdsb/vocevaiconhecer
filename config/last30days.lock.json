@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/mvanhorn/last30days-skill.git",
+  "commit": "084662b501fb0dba95bd55eff0c258d35e0dc499",
+  "skillVersion": "3.25.0",
+  "windowDays": 15,
+  "mode": "global-discovery-json",
+  "browserCookies": false,
+  "apiKeys": false,
+  "allowedSources": ["reddit", "hackernews", "github", "web"],
+  "note": "Optional sources remain disabled unless explicitly configured; the application never inherits global AI or social credentials."
+}

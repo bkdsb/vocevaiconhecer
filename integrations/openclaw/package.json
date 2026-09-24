@@ -1,0 +1,9 @@
+{
+  "name": "vvc-auto-post-openclaw",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenClaw bridge for Você Vai Conhecer approval commands",
+  "openclaw": { "extensions": ["./index.js"] },
+  "peerDependencies": { "openclaw": ">=2026.7.0" }
+}

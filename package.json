@@ -1,0 +1,22 @@
+{
+  "name": "vocevaiconhecer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/cli.js worker",
+    "doctor": "node --env-file-if-exists=.env src/cli.js doctor",
+    "batch": "node --env-file-if-exists=.env src/cli.js batch",
+    "status": "node --env-file-if-exists=.env src/cli.js status",
+    "worker": "node --env-file-if-exists=.env src/cli.js worker",
+    "test": "node --test test/*.test.js",
+    "setup:research": "node scripts/setup-last30days.mjs"
+  },
+  "dependencies": {
+    "fast-xml-parser": "5.11.1",
+    "sharp": "0.35.4"
+  }
+}

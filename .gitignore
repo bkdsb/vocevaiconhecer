@@ -56,3 +56,10 @@ ChloeUGC/
 .idea/
 .vscode/
 
+# Isolated third-party research checkout and private configuration
+vendor/
+.local/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+!assets/brand/*.png
