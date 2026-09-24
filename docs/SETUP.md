@@ -8,6 +8,8 @@
 
 O lote só roda quando `AI_FREE_TIER_CONFIRMED=true`, `CF_ACCOUNT_ID`, `CF_API_TOKEN` estiverem preenchidos e os modelos mantiverem a lista gratuita permitida. Não há fallback automático para serviço pago ou banco de imagens: cada arte passa por geração de imagem via IA.
 
+No servidor, o worker já está ativo em modo seguro (`AI_FREE_TIER_CONFIRMED=false` e `META_PUBLISH_ENABLED=false`). Para liberar a primeira geração, preencha o `.env` privado com uma conta Cloudflare Workers AI que você confirmou como gratuita e reinicie `vvc-autopost.service`. O código não compra créditos nem habilita faturamento.
+
 ## Meta
 
 O app `1051796081025755` precisa de Facebook Login for Business e permissões de página. O fluxo do backend é:
@@ -20,6 +22,8 @@ authorizationUrl(state) → exchangeCode(code) → extendToken(token)
 O token final fica somente no servidor. `META_PUBLISH_ENABLED=false` é o padrão. A publicação é feita por `POST /v26.0/{page-id}/photos` com multipart local; respostas ambíguas entram em `publication_unknown` e nunca são repetidas automaticamente.
 
 O usuário precisa fornecer a autorização no navegador e concluir MFA/revisões da Meta quando solicitados. O App Secret que foi exposto na conversa deve ser redefinido no painel antes de colocá-lo no servidor.
+
+Após redefinir o segredo, faça o OAuth da Página e valide `META_PAGE_ID`/`META_PAGE_TOKEN` com o provider. Só então altere `META_PUBLISH_ENABLED=true`; a aprovação por WhatsApp continua obrigatória.
 
 ## WhatsApp/OpenClaw
 

@@ -43,4 +43,4 @@ Gerar diariamente um lote de oito publicações em português: quatro curiosidad
 - [x] Arte e revisão — composição 1080×1350, logo, gradiente, tipografia e validações de headline implementados.
 - [x] WhatsApp/OpenClaw — provider de envio, bridge local, comandos versionados e plugin `inbound_claim` implementados; instalação no Gateway é o próximo smoke test.
 - [ ] Meta — adaptador Graph/OAuth implementado, mas OAuth da Página, token e revisão do app ainda exigem ação no painel Meta.
-- [ ] Testes, implantação e push.
+- [x] Testes, implantação e push — 12 testes locais e no servidor, auditoria npm limpa, worker systemd ativo, bridge autenticado e plugin OpenClaw carregado; smoke de IA/Meta aguarda credenciais autorizadas.
