@@ -1,0 +1,58 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+credentials*.json
+client_secret*.json
+
+# Dependencies and generated files
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+dist/
+build/
+coverage/
+tmp/
+logs/
+*.log
+
+# Runtime data and generated publications
+data/
+storage/
+output/
+generated/
+
+# Large source media and editing projects
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.wav
+*.m4a
+*.psd
+*.prproj
+*.prin
+*.aegraphic
+Adobe Premiere Pro Auto-Save/
+Animation Composer/
+Motion Graphics Template Media/
+Stock and CC Libraries Downloads/
+ChloeUGC/
+
+# Existing reference artwork (kept locally; selected assets can be force-added later)
+*.png
+*.jpg
+*.jpeg
+*.webp
+
+# Operating system and editor files
+.DS_Store
+.idea/
+.vscode/
+
