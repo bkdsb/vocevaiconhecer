@@ -12,16 +12,20 @@ function within(date, now, days) { const parsed = dateValue(date); return parsed
 function cleanUrl(value) { return typeof value === 'string' && URL_RE.test(value) ? value : ''; }
 function sourceFrom(url, index, result, now, days) {
   const parsed = dateValue(result?.published_at);
-  return { id: idFor(String(result?.title || 'evidence'), url || String(index)), url, title: String(result?.title || result?.topic || 'Fonte de tendência'), publishedAt: parsed?.toISOString() || null, text: String(result?.summary || result?.why_spiking || '').slice(0, 2_000), isPrimary: false };
+  return { id: idFor(String(result?.title || result?.topic || result?.name || 'evidence'), url || String(index)), url, title: String(result?.title || result?.topic || result?.name || 'Fonte de tendência'), publishedAt: parsed?.toISOString() || null, text: String(result?.summary || result?.why_spiking || '').slice(0, 2_000), isPrimary: false };
 }
 
 function normalizeReport(report, now, days) {
-  const results = Array.isArray(report?.results) ? report.results : Array.isArray(report?.findings) ? report.findings : [];
-  const discovery = report?.kind === 'discovery' || Array.isArray(report?.results) && report?.velocity_score === undefined;
+  // `last30days --discover --json-profile=raw` currently calls its ranked
+  // discovery rows `topics`; older profiles used `results`/`findings`.
+  const results = Array.isArray(report?.results) ? report.results
+    : Array.isArray(report?.findings) ? report.findings
+      : Array.isArray(report?.topics) ? report.topics : [];
+  const discovery = report?.kind === 'discovery' || Array.isArray(report?.topics) || Array.isArray(report?.results) && report?.velocity_score === undefined;
   const entries = discovery ? results : results.map((item) => ({ ...item, topic: item.title, why_spiking: item.summary }));
   const candidates = [];
   for (const result of entries) {
-    const topic = String(result.topic || result.title || '').replace(/\s+/gu, ' ').trim();
+    const topic = String(result.topic || result.title || result.name || '').replace(/\s+/gu, ' ').trim();
     if (!topic) continue;
     const urls = [...new Set((Array.isArray(result.evidence_urls) ? result.evidence_urls : [result.url]).map(cleanUrl).filter(Boolean))];
     const sources = urls.map((url, index) => sourceFrom(url, index, result, now, days));
@@ -29,8 +33,9 @@ function normalizeReport(report, now, days) {
     const recentSources = sources.filter((source) => !source.publishedAt || within(source.publishedAt, now, days));
     const signals = [];
     for (const source of sources) {
-      const native = result.engagement || {};
-      const values = Object.values(native).filter((value) => Number.isFinite(Number(value))).map(Number);
+      const native = result.engagement || result.engagement_by_source || {};
+      const values = Object.values(native).flatMap((value) => value && typeof value === 'object' ? Object.values(value) : [value])
+        .filter((value) => Number.isFinite(Number(value))).map(Number);
       if (values.length) signals.push({ url: source.url, source: result.source || (result.sources?.[0] || 'trend'), publishedAt: source.publishedAt, engagement: Math.max(...values) });
     }
     const isNews = NEWS_WORDS.test(`${topic} ${String(result.why_spiking || '')}`) || /news|update|announce|research|study|launch|discover/i.test(String(result.why_spiking || ''));
