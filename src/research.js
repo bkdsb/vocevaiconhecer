@@ -18,10 +18,21 @@ function sourceFrom(url, index, result, now, days) {
 function normalizeReport(report, now, days) {
   // `last30days --discover --json-profile=raw` currently calls its ranked
   // discovery rows `topics`; older profiles used `results`/`findings`.
+  const ranked = Array.isArray(report?.ranked_candidates) ? report.ranked_candidates.map((item) => ({
+    topic: item.title,
+    why_spiking: item.snippet || item.explanation,
+    velocity_score: item.final_score,
+    corroboration_count: Array.isArray(item.sources) ? item.sources.length : 0,
+    evidence_urls: [item.url, ...(Array.isArray(item.source_items) ? item.source_items.map((source) => source.url) : [])],
+    engagement: { total: item.engagement },
+    published_at: item.source_items?.[0]?.published_at,
+    source: item.source,
+    categoryHint: report?.categoryHint,
+  })) : [];
   const results = Array.isArray(report?.results) ? report.results
     : Array.isArray(report?.findings) ? report.findings
-      : Array.isArray(report?.topics) ? report.topics : [];
-  const discovery = report?.kind === 'discovery' || Array.isArray(report?.topics) || Array.isArray(report?.results) && report?.velocity_score === undefined;
+      : Array.isArray(report?.topics) ? report.topics : ranked;
+  const discovery = report?.kind === 'discovery' || Array.isArray(report?.topics) || Array.isArray(report?.ranked_candidates) || Array.isArray(report?.results) && report?.velocity_score === undefined;
   const entries = discovery ? results : results.map((item) => ({ ...item, topic: item.title, why_spiking: item.summary }));
   const candidates = [];
   for (const result of entries) {
@@ -38,7 +49,8 @@ function normalizeReport(report, now, days) {
         .filter((value) => Number.isFinite(Number(value))).map(Number);
       if (values.length) signals.push({ url: source.url, source: result.source || (result.sources?.[0] || 'trend'), publishedAt: source.publishedAt, engagement: Math.max(...values) });
     }
-    const isNews = NEWS_WORDS.test(`${topic} ${String(result.why_spiking || '')}`) || /news|update|announce|research|study|launch|discover/i.test(String(result.why_spiking || ''));
+    const isNews = result.categoryHint === 'news' ? true : result.categoryHint === 'curiosity' ? false
+      : NEWS_WORDS.test(`${topic} ${String(result.why_spiking || '')}`) || /update|announce|research|study|launch|discover/i.test(String(result.why_spiking || '').replace(/hackernews|reddit|evidence items/gi, ''));
     const category = isNews ? 'news' : 'curiosity';
     const corroboration = Number(result.corroboration_count || result.sources?.length || sources.length || 0);
     const score = Number.isFinite(Number(result.velocity_score)) ? Number(result.velocity_score) : Number.isFinite(Number(result.relevance_score)) ? Math.round(Number(result.relevance_score) * 100) : null;
@@ -80,9 +92,17 @@ export async function researchTopics(config, { now = new Date(), onProgress = ()
   const env = { LAST30DAYS_MEMORY_DIR: config.last30daysDir, LAST30DAYS_CONFIG_DIR: resolve(config.last30daysDir, 'config'), SKIP_KEYCHAIN: '1', FROM_BROWSER: 'off', AUTH_TOKEN: '', CT0: '', X_BEARER_TOKEN: '', XAI_API_KEY: '', OPENAI_API_KEY: '', OPENROUTER_API_KEY: '', PERPLEXITY_API_KEY: '' };
   const warnings = [];
   const run = async (args) => { onProgress({ type: 'research_started', args }); const result = await runImpl({ pythonBin: config.pythonBin, scriptPath, args, timeoutMs: config.researchTimeoutMs, env }); onProgress({ type: 'research_finished' }); return parseJsonOutput(result.stdout); };
+  const jobs = [
+    { label: 'global', args: ['--discover', '--emit=json', '--json-profile=raw', '--days=15', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
+    ...['unusual animals', 'strange foods', 'space mysteries', 'unusual countries traditions'].map((topic) => ({ label: `curiosity:${topic}`, categoryHint: 'curiosity', args: [topic, '--emit=json', '--json-profile=raw', '--days=15', '--no-browser-cookies', '--save-dir', config.last30daysDir] })),
+    ...['science medicine breakthrough', 'AI technology innovation'].map((topic) => ({ label: `news:${topic}`, categoryHint: 'news', args: [topic, '--emit=json', '--json-profile=raw', '--days=15', '--no-browser-cookies', '--save-dir', config.last30daysDir] })),
+  ];
+  const completed = await Promise.allSettled(jobs.map(async (job) => ({ job, report: await run(job.args) })));
   const reports = [];
-  try { reports.push(await run(['--discover', '--emit=json', '--json-profile=raw', '--days=15', '--no-browser-cookies', '--save-dir', config.last30daysDir])); }
-  catch (error) { warnings.push({ code: error.code || 'RESEARCH_FAILED', message: error.message }); }
+  for (const result of completed) {
+    if (result.status === 'fulfilled') reports.push({ ...result.value.report, categoryHint: result.value.job.categoryHint });
+    else warnings.push({ code: result.reason?.code || 'RESEARCH_FAILED', message: result.reason?.message || 'Pesquisa indisponível.' });
+  }
   const candidates = reports.flatMap((report) => normalizeReport(report, now, 15));
   const counts = { curiosity: 0, news: 0 }; for (const candidate of candidates) counts[candidate.category] += 1;
   if (counts.curiosity < 4) warnings.push({ code: 'INSUFFICIENT_CURIOSITIES', available: counts.curiosity, requested: 4 });

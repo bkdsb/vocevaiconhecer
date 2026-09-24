@@ -31,4 +31,4 @@ O processo `npm start` executa o worker diário e o bridge local na porta `8790`
 
 ## Pesquisa e tendência
 
-O pipeline chama a skill `last30days` em modo discovery, JSON raw, janela de 15 dias e cookies desativados. Sinais sem métrica de engajamento recebem rótulo explícito e não são chamados de virais. O lote não inventa candidatos: se houver menos de quatro curiosidades ou quatro notícias verificadas, o lote avisa e fica incompleto para revisão.
+O pipeline chama a skill `last30days` em JSON raw, janela de 15 dias e cookies desativados. Ele combina a descoberta global com buscas temáticas de animais, comidas, espaço, países, ciência/medicina e tecnologia para manter as duas categorias separadas. Sinais sem métrica de engajamento recebem rótulo explícito e não são chamados de virais. O lote não inventa candidatos: se houver menos de quatro curiosidades ou quatro notícias verificadas, o lote avisa e fica incompleto para revisão.
