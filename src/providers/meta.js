@@ -72,6 +72,13 @@ async function readImage(imagePath) {
   } finally {
     await file?.close().catch(() => {});
   }
+  return imageFromBytes(bytes);
+}
+
+function imageFromBytes(bytes) {
+  if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > MAX_IMAGE_BYTES) {
+    fail('META_INVALID_INPUT', 'A imagem deve conter entre 1 byte e 10 MiB.');
+  }
   if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
     return { bytes, type: 'image/png', name: 'post.png' };
   }
@@ -264,13 +271,15 @@ export function createMetaProvider(config, { fetchImpl = globalThis.fetch } = {}
       return { id: data.id, name: data.name };
     },
 
-    async publishPhoto({ pageId, pageToken, imagePath, caption, published = true }) {
+    async publishPhoto({ pageId, pageToken, imageBuffer, imagePath, caption, published = true }) {
       identifier(pageId, 'Page ID');
       secret(pageToken, 'Page Access Token');
       if (typeof caption !== 'string' || !caption.trim() || caption.length > 63_206 || typeof published !== 'boolean') {
         fail('META_INVALID_INPUT', 'Legenda ou modo de publicação inválido.');
       }
-      const image = await readImage(imagePath);
+      // The workflow hashes these exact bytes before claiming publication. Never
+      // reopen the path when a verified buffer was supplied: the file can change.
+      const image = imageBuffer === undefined ? await readImage(imagePath) : imageFromBytes(imageBuffer);
       const body = new FormData();
       body.set('source', new Blob([image.bytes], { type: image.type }), image.name);
       body.set('caption', caption);

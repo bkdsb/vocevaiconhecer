@@ -5,6 +5,7 @@ import { renderPost } from './render.js';
 import { researchTopics } from './research.js';
 
 function hash(value) { return createHash('sha256').update(value).digest('hex'); }
+function safeErrorCode(error, fallback) { return /^[A-Z][A-Z0-9_]{1,63}$/.test(error?.code || '') ? error.code : fallback; }
 function shuffled(items, seed) { return [...items].sort((a, b) => hash(`${seed}:${a.id}`).localeCompare(hash(`${seed}:${b.id}`))); }
 function select(candidates, category, count, seed) { return shuffled(candidates.filter((candidate) => candidate.category === category && candidate.publishable), seed).slice(0, count); }
 export function slotTimes(date = new Date(), timezone = 'America/Sao_Paulo') {
@@ -42,16 +43,31 @@ export async function createDailyBatch({ config, store, ai, renderer = renderPos
   const existing = store.batchForDay(localDay);
   if (existing) return { batchId: existing.id, skipped: 'already_created_today' };
   const batchId = `batch_${localDay.replaceAll('-', '')}_${randomUUID().slice(0, 8)}`;
-  try { store.createBatch({ id: batchId, createdAt: now.toISOString(), localDay }); }
+  try { store.createBatch({ id: batchId, createdAt: now.toISOString(), localDay, status: 'generating' }); }
   catch (error) { const claimed = store.batchForDay(localDay); if (claimed) return { batchId: claimed.id, skipped: 'already_created_today' }; throw error; }
-  store.setBatchStatus(batchId, 'generating');
+  let notices = Promise.resolve();
+  let verificationAnnounced = false;
+  const notify = (text) => {
+    notices = notices.then(() => messenger?.send?.({ text: `LOTE ${batchId}\n${text}` }))
+      .catch((error) => { store.addEvent('progress_delivery_failed', { batchId, code: safeErrorCode(error, 'DELIVERY_FAILED') }); });
+    return notices;
+  };
   try {
-  const result = await research(config, { now, onProgress: (event) => messenger?.send?.({ text: `Pesquisa: ${event.type}` }).catch?.(() => {}) });
+  await notify('Iniciando a pesquisa de curiosidades e notícias dos últimos 15 dias.');
+  const result = await research(config, { now, onProgress: (event) => {
+    if (event.type === 'verification_started' && !verificationAnnounced) {
+      verificationAnnounced = true;
+      notify('Pesquisa coletada. Conferindo datas, fontes e afirmações dos candidatos.');
+    }
+  } });
+  const verified = result.candidates.filter((candidate) => candidate.publishable);
+  await notify(`Pesquisa concluída: ${result.candidates.length} candidatos analisados; ${verified.filter((candidate) => candidate.category === 'curiosity').length} curiosidades e ${verified.filter((candidate) => candidate.category === 'news').length} notícias verificadas.`);
   const curiosity = select(result.candidates, 'curiosity', 4, now.toISOString());
   const news = select(result.candidates, 'news', 4, `${now.toISOString()}:news`);
   const selected = [...curiosity, ...news];
   if (curiosity.length !== 4 || news.length !== 4) {
     store.setBatchStatus(batchId, 'blocked', { warning: `Pesquisa incompleta: ${curiosity.length}/4 curiosidades e ${news.length}/4 notícias verificadas.` });
+    await notify(`Lote bloqueado: fontes verificadas insuficientes (${curiosity.length}/4 curiosidades; ${news.length}/4 notícias). Código: INSUFFICIENT_VERIFIED_SOURCES. Nenhum post foi gerado.`);
     return { batchId, selected: 0, warnings: result.warnings, blocked: 'insufficient_verified_sources' };
   }
   await mkdir(config.outputDir, { recursive: true });
@@ -65,7 +81,7 @@ export async function createDailyBatch({ config, store, ai, renderer = renderPos
     const postId = `${batchId}_p${index + 1}`;
     store.insertPost({ id: postId, batchId, slot: index + 1, category: candidate.category, topic: candidate.topic, version, contentHash: digest, headline: copy.headline, caption: copy.caption, imagePath: outputPath, sources: candidate.sources, trend: candidate.trend, status: 'pending_approval' });
     try { await messenger?.send?.({ text: `LOTE ${batchId}\nPOST ${index + 1}/8\n${copy.headline}\n\n${copy.caption}\n\nCategoria: ${candidate.category}\nTendência: ${candidate.trend.label}\nFontes: ${candidate.sources.map((source) => source.url).join(' | ')}\n\nResponda APROVAR ${postId} ${version.slice(0, 8)} ou REJEITAR ${postId}`, imagePath: outputPath }); }
-    catch (error) { store.addEvent('preview_delivery_failed', { batchId, postId, code: error.code || 'DELIVERY_FAILED' }); }
+    catch (error) { store.addEvent('preview_delivery_failed', { batchId, postId, code: safeErrorCode(error, 'DELIVERY_FAILED') }); }
   }
   if (store.getBatch(batchId).status !== 'paused') {
     store.setBatchStatus(batchId, 'pending_approval');
@@ -73,7 +89,9 @@ export async function createDailyBatch({ config, store, ai, renderer = renderPos
   }
   return { batchId, selected: selected.length, warnings: result.warnings };
   } catch (error) {
-    store.setBatchStatus(batchId, 'blocked', { warning: `Geração interrompida: ${error.code || 'GENERATION_FAILED'}. Revisão necessária; sem repetição automática.` });
+    const code = safeErrorCode(error, 'GENERATION_FAILED');
+    store.setBatchStatus(batchId, 'blocked', { warning: `Geração interrompida: ${code}. Revisão necessária; sem repetição automática.` });
+    await notify(`Lote interrompido. Código: ${code}. Os posts deste lote aguardam revisão; não haverá nova tentativa automática hoje.`);
     throw error;
   }
 }
@@ -81,13 +99,17 @@ export async function createDailyBatch({ config, store, ai, renderer = renderPos
 export function scheduleBatch({ store, config, batchId, now = new Date() }) {
   return store.transaction(() => {
   const batch = store.getBatch(batchId); if (!batch) throw new Error('Lote não encontrado.');
-  if (!['draft', 'pending_approval'].includes(batch.status)) return { scheduled: false, reason: `batch_${batch.status}` };
+  if (!['draft', 'pending_approval', 'scheduled'].includes(batch.status)) return { scheduled: false, reason: `batch_${batch.status}` };
   if (batch.posts.length !== 8) return { scheduled: false, reason: 'incomplete_batch' };
   if (batch.posts.filter((post) => post.category === 'curiosity').length !== 4) return { scheduled: false, reason: 'invalid_category_split' };
-  if (batch.posts.some((post) => post.status !== 'approved' || !post.approved_at)) return { scheduled: false, reason: 'awaiting_approval' };
-  const times = futureSlots({ store, config, count: 8, now });
-  for (const post of batch.posts) { if (post.status === 'approved') store.markScheduled(post.id, times[post.slot - 1]); }
-  store.setBatchStatus(batchId, 'scheduled');
+  const previouslyScheduled = batch.approved_at || batch.status === 'scheduled'
+    || batch.posts.some((post) => ['scheduled', 'publishing', 'published', 'publication_unknown', 'publication_failed'].includes(post.status));
+  if (!previouslyScheduled && batch.posts.some((post) => post.status !== 'approved' || !post.approved_at)) return { scheduled: false, reason: 'awaiting_approval' };
+  const approved = batch.posts.filter((post) => post.status === 'approved' && post.approved_at);
+  if (!approved.length) return { scheduled: false, reason: 'no_approved_posts' };
+  const times = futureSlots({ store, config, count: approved.length, now });
+  approved.forEach((post, index) => store.markScheduled(post.id, times[index]));
+  store.setBatchStatus(batchId, 'scheduled', { approved_at: batch.approved_at || now.toISOString() });
   return { scheduled: true, times };
   });
 }
@@ -108,7 +130,7 @@ export async function publishDue({ store, meta, config, now = new Date() }) {
     if (!post.content_hash || contentHash({ ...post, imageBuffer }) !== post.content_hash) {
       store.invalidatePost(post.id, 'Conteúdo mudou ou não possui hash; requer nova revisão.'); continue;
     }
-    if (!store.claimPublication(post.id, now.toISOString(), earliest, new Date(now.getTime() - 60 * 60_000).toISOString())) continue;
+    if (!store.claimPublication(post.id, now.toISOString(), earliest, new Date(now.getTime() - 60 * 60_000).toISOString(), post)) continue;
     try { const result = await meta.publishPhoto({ pageId: config.metaPageId, pageToken: config.metaPageToken, imageBuffer, imagePath: post.image_path, caption: post.caption, published: true }); store.markPublished(post.id, result, now.toISOString()); published += 1; }
     catch (error) {
       if (['META_REJECTED', 'META_CONFIG', 'META_INVALID_INPUT'].includes(error.code)) store.markFailed(post.id, error.code);
@@ -129,12 +151,16 @@ export async function handleApprovalCommand({ text, sender, config, store, batch
     const postBefore = store.getPost(id);
     if (!postBefore) throw Object.assign(new Error('Post não encontrado.'), { code: 'POST_NOT_FOUND' });
     if (!/^[a-f0-9]{8,16}$/i.test(versionPrefix || '') || !postBefore.version.startsWith(versionPrefix)) throw Object.assign(new Error(`Versão inválida. Use APROVAR ${id} ${postBefore.version.slice(0, 8)}.`), { code: 'STALE_VERSION' });
-    const post = store.approvePost(id, now.toISOString());
+    let imageBuffer;
+    try { imageBuffer = await readFile(postBefore.image_path); }
+    catch { throw Object.assign(new Error('Imagem indisponível; restaure ou gere uma nova prévia antes de aprovar.'), { code: 'CONTENT_UNAVAILABLE' }); }
+    if (!postBefore.content_hash || contentHash({ ...postBefore, imageBuffer }) !== postBefore.content_hash) {
+      throw Object.assign(new Error('O conteúdo difere da prévia. Restaure ou gere uma nova versão para revisão.'), { code: 'CONTENT_CHANGED' });
+    }
+    const post = store.approvePost(id, now.toISOString(), postBefore);
     if (!post) throw Object.assign(new Error('Post já não está aguardando aprovação.'), { code: 'POST_NOT_PENDING' });
-    const targetBatch = store.getBatch(post.batch_id);
-    const allApproved = targetBatch?.posts.length > 0 && targetBatch.posts.every((item) => item.status === 'approved');
-    const scheduled = allApproved ? scheduleBatch({ store, config, batchId: post.batch_id, now }) : { scheduled: false };
-    return { text: scheduled.scheduled ? `Aprovado ${id}. Todos os posts do lote foram aprovados e estão agendados.` : `Aprovado ${id}.` };
+    const scheduled = scheduleBatch({ store, config, batchId: post.batch_id, now });
+    return { text: scheduled.scheduled ? `Aprovado ${id}. Os posts aprovados estão agendados.` : `Aprovado ${id}.` };
   }
   if (verb === 'REJEITAR' && id) { const post = store.rejectPost(id); if (!post) throw Object.assign(new Error('Post não encontrado.'), { code: 'POST_NOT_FOUND' }); return { text: `Rejeitado ${id}.` }; }
   const targetBatchId = id || batchId || store.latestBatch()?.id;

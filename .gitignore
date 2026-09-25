@@ -59,6 +59,8 @@ ChloeUGC/
 # Isolated third-party research checkout and private configuration
 vendor/
 .local/
+.runtime/
+.bridge-token
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal

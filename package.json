@@ -10,6 +10,8 @@
     "start": "node --env-file-if-exists=.env src/cli.js worker",
     "doctor": "node --env-file-if-exists=.env src/cli.js doctor",
     "batch": "node --env-file-if-exists=.env src/cli.js batch",
+    "research": "node --env-file-if-exists=.env src/cli.js research",
+    "preview": "node --env-file-if-exists=.env src/cli.js preview",
     "status": "node --env-file-if-exists=.env src/cli.js status",
     "worker": "node --env-file-if-exists=.env src/cli.js worker",
     "test": "node --test test/*.test.js",

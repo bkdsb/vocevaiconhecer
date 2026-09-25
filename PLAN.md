@@ -41,18 +41,22 @@ Gerar diariamente um lote de oito publicações em português: quatro curiosidad
 Os checks abaixo registram implementação, não integração ponta a ponta. A revisão encontrou lacunas; o sistema ainda não está pronto para produção.
 
 1. Corrigir pausa/retomada, horários vencidos, concorrência e repetição após falha; ampliar testes.
-2. Integrar texto via conta OAuth do Codex no OpenClaw, com editor isolado e sem ferramentas; validar chamada real. O probe OAuth passou em 24/09, mas ainda não comprova execução do agente.
+2. Integrar texto via conta OAuth do Codex no OpenClaw, com editor isolado e sem ferramentas. Chamada real confirmada em 25/09: `openai/gpt-5.6-sol`, sem ferramentas nem fallback.
 3. Produzir uma prévia com imagem por IA, fontes reais e proveniência explícita; não chamar tema antigo de tendência recente sem evidência.
 4. Exigir datas e separar descoberta last30days de verificação editorial. Sem evidência suficiente, bloquear o lote.
 5. Implantar e subir código/testes/documentação; manter geração diária e publicação desativadas até validação das imagens automáticas, WhatsApp e Meta.
 
-Pendências externas: rotação do segredo Meta exposto, autorização da Página e validação da franquia de imagens. Nunca copiar tokens para o Git.
+Imagem real confirmada em 25/09 pelo comando nativo: `openai/gpt-image-2`, autenticação OAuth, transporte Codex Responses, sem tentativas alternativas. Falta concluir a prévia composta e a entrega real pelo WhatsApp.
+
+Validação local atual: 78 testes passaram, cobrindo fontes, datas, geração, prévias, aprovação, concorrência, pausa, integridade e respostas ambíguas. Publicação e geração automática continuam desativadas durante os testes de integração.
+
+Pendências: conexão OAuth operacional da Meta (os métodos do provider existem, mas ainda falta fluxo executável), rotação do segredo exposto, autorização da Página e lote 4+4 real validado. Nunca copiar tokens para o Git.
 
 - [x] Plano registrado antes da implementação.
 - [x] Inventário e contratos — app Meta, host OpenClaw e chave SSH foram localizados; segredos continuam fora do Git.
 - [x] Base executável — Node 24, SQLite, CLI, estados, idempotência por lote e worker diário implementados.
-- [x] Pesquisa e IA — contrato `last30days` fixado por SHA, janela de 15 dias, filtros de evidência e adaptadores OpenClaw/Codex e Cloudflare implementados; geração real aguarda franquia disponível.
+- [x] Pesquisa e IA — contrato `last30days` fixado por SHA, janela de 15 dias, descoberta separada de verificação; texto e imagem reais confirmados via OpenClaw/Codex. Lote real 4+4 ainda pendente.
 - [x] Arte e revisão — composição 1080×1350, logo, gradiente, tipografia e validações de headline implementados.
-- [x] WhatsApp/OpenClaw — provider de envio, bridge local, comandos versionados e plugin `inbound_claim` implementados; instalação no Gateway é o próximo smoke test.
+- [x] WhatsApp/OpenClaw — provider de envio, bridge local, comandos versionados e plugin `inbound_claim` implementados e instalados. Entrega de prévia e resposta real de aprovação ainda pendentes.
 - [ ] Meta — adaptador Graph/OAuth implementado, mas OAuth da Página, token e revisão do app ainda exigem ação no painel Meta.
-- [x] Testes, implantação e push — 12 testes locais e no servidor, auditoria npm limpa, worker systemd ativo, bridge autenticado e plugin OpenClaw carregado; smoke de IA/Meta aguarda credenciais autorizadas.
+- [ ] Conclusão da integração — alterações atuais com 78 testes locais; implantar, validar prévia/WhatsApp e registrar os resultados reais. Worker foi pausado durante os testes; retomar com geração/publicação desativadas.

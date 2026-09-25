@@ -6,13 +6,17 @@
 2. Execute `npm install` e `npm run setup:research` usando Python 3.12+ para fixar o repositório `last30days` no SHA registrado em `config/last30days.lock.json`.
 3. Execute `npm test` e `npm run doctor`.
 
-O lote usa o caminho do OpenClaw/Codex quando `OPENCLAW_ENABLED=true` (ou `OPENCLAW_AI_ENABLED=true`). O comando chama o Gateway com `OPENCLAW_AI_MODEL` e não permite fallback para outro provedor. A alternativa Cloudflare só é usada quando o caminho OpenClaw estiver desativado, com `AI_FREE_TIER_CONFIRMED=true`, `CF_ACCOUNT_ID` e `CF_API_TOKEN` preenchidos e modelos na lista gratuita permitida. Não há fallback automático para serviço pago ou banco de imagens: cada arte passa por geração de imagem via IA.
+O lote usa OpenClaw/Codex somente com `OPENCLAW_AI_ENABLED=true`. Habilitar WhatsApp não habilita IA. O editor `vvc-editor` usa `OPENCLAW_AI_MODEL`, sem ferramentas e sem modelos alternativos; `vvc-research` permite apenas busca/leitura da web. Ambos devem ter heartbeat desativado e nenhuma skill de execução. O texto confirma o provedor/modelo vencedor no resultado do Gateway.
+
+Imagens usam `openclaw infer image generate`, que aguarda o arquivo final. Configure `agents.defaults.imageGenerationModel` com `primary: "openai/gpt-image-2"` e `fallbacks: []`. O adaptador verifica essa configuração, ausência de override de API OpenAI e perfis exclusivamente OAuth antes de gerar. Os arquivos ficam em `OPENCLAW_MEDIA_DIR`. O caminho usa a assinatura já existente, sujeito à sua franquia; não significa uma assinatura gratuita ou capacidade ilimitada.
+
+A alternativa Cloudflare é experimental e só é selecionada explicitamente com o caminho OpenClaw desativado, `AI_FREE_TIER_CONFIRMED=true` e credenciais próprias. Ela não foi validada no servidor e não fornece o verificador editorial. Nenhum fallback automático compra créditos ou seleciona outro serviço.
 
 No servidor, o worker permanece com `META_PUBLISH_ENABLED=false`. A conta Codex do OpenClaw é a rota primária; se estiver em cooldown ou sem franquia, o lote fica bloqueado e não troca de conta silenciosamente. O código não compra créditos nem habilita faturamento.
 
 ## Meta
 
-O app `1051796081025755` precisa de Facebook Login for Business e permissões de página. O fluxo do backend é:
+O app `1051796081025755` precisa de Facebook Login for Business e permissões de página. O provider oferece estes métodos; a conexão OAuth operacional ainda está em implementação:
 
 ```text
 authorizationUrl(state) → exchangeCode(code) → extendToken(token)
@@ -31,8 +35,21 @@ O OpenClaw existente foi confirmado no servidor `ubuntu@161.153.125.141`, versã
 
 Configure um número dedicado e `OPENCLAW_WHATSAPP_TARGET` em E.164. O primeiro pareamento QR, caso ainda não esteja ativo, é uma ação manual no aparelho.
 
-O processo `npm start` executa o worker diário e o bridge local na porta `8790`. Depois que as credenciais gratuitas de IA forem configuradas, ele gera um lote após `VVC_GENERATION_TIME` (padrão `08:00`), envia cada prévia com a versão para aprovação e publica somente itens aprovados. A pasta `integrations/openclaw` contém o plugin que captura `STATUS`, `APROVAR`, `REJEITAR`, `PAUSAR` e `RETOMAR` via `inbound_claim`.
+O processo `npm start` executa o worker e o bridge local na porta `8790`. A geração diária exige `VVC_GENERATION_ENABLED=true` e ocorre após `VVC_GENERATION_TIME` (padrão `08:00`). Os ticks são serializados; um lote iniciado reserva o dia, inclusive quando termina bloqueado. Não há repetição automática de geração falha. Prévias têm versão obrigatória para aprovação; somente um lote 4+4 completo e aprovado pode ser agendado. A pasta `integrations/openclaw` contém o plugin que captura `STATUS`, `APROVAR`, `REJEITAR`, `PAUSAR` e `RETOMAR` via `inbound_claim`.
 
 ## Pesquisa e tendência
 
 O pipeline chama a skill `last30days` em JSON raw, janela de 15 dias e cookies desativados. Ele combina a descoberta global com buscas temáticas de animais, comidas, espaço, países, ciência/medicina e tecnologia para manter as duas categorias separadas. Sinais sem métrica de engajamento recebem rótulo explícito e não são chamados de virais. O lote não inventa candidatos: se houver menos de quatro curiosidades ou quatro notícias verificadas, o lote avisa e fica incompleto para revisão.
+
+Descoberta não é verificação factual. O verificador baixa páginas HTTPS permitidas, extrai datas publicadas e exige trechos literais para cada afirmação. Notícias precisam de uma fonte primária recente e duas fontes citadas em domínios independentes. Curiosidades podem usar estudos antigos, mas precisam de atividade recente datada para entrar no lote. A atividade detectada não comprova viralidade. Todos os relatórios ficam em `data/research`, fora do Git.
+
+Comandos manuais (não ativam a rotina diária):
+
+```sh
+npm run research -- --discover-only
+npm run research
+npm run preview -- examples/sea-robin.json
+npm run preview -- examples/sea-robin.json --send
+```
+
+O primeiro comando apenas descobre temas. O segundo acrescenta a verificação editorial pela IA. `preview` verifica fatos, gera legenda e imagem, aplica a marca e salva o relatório; `--send` envia ao WhatsApp configurado. Uma prévia técnica pode demonstrar curiosidade antiga sem tendência, mas fica fora do banco de publicações e não pode ser aprovada/agendada. Somente `npm run batch` cria um lote de produção.
