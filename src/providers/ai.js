@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { createOpenClawAIProvider } from './openclaw-ai.js';
 
 const TEXT_MODELS = new Set(['@cf/meta/llama-3.1-8b-instruct', '@cf/google/gemma-3-12b-it']);
 const IMAGE_MODELS = new Set(['@cf/black-forest-labs/flux-1-schnell']);
@@ -19,6 +20,7 @@ function safeJson(value) {
 }
 
 export function createAIProvider(config, { fetchImpl = globalThis.fetch } = {}) {
+  if (config.openclawAiEnabled) return createOpenClawAIProvider(config, { fetchImpl });
   if (typeof fetchImpl !== 'function') fail('AI_NOT_CONFIGURED', 'Cliente HTTP indisponível.');
   if (!config.aiFreeTierConfirmed) fail('AI_NOT_CONFIGURED', 'AI_FREE_TIER_CONFIRMED precisa ser true.');
   if (!TEXT_MODELS.has(config.textModel) || !IMAGE_MODELS.has(config.imageModel)) fail('AI_NOT_CONFIGURED', 'Modelo de IA fora da lista gratuita permitida.');

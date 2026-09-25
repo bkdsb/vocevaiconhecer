@@ -51,7 +51,7 @@ Pendências externas: rotação do segredo Meta exposto, autorização da Págin
 - [x] Plano registrado antes da implementação.
 - [x] Inventário e contratos — app Meta, host OpenClaw e chave SSH foram localizados; segredos continuam fora do Git.
 - [x] Base executável — Node 24, SQLite, CLI, estados, idempotência por lote e worker diário implementados.
-- [x] Pesquisa e IA — contrato `last30days` fixado por SHA, janela de 15 dias, filtros de evidência e adaptador Cloudflare free-tier implementados; credenciais ainda pendentes.
+- [x] Pesquisa e IA — contrato `last30days` fixado por SHA, janela de 15 dias, filtros de evidência e adaptadores OpenClaw/Codex e Cloudflare implementados; geração real aguarda franquia disponível.
 - [x] Arte e revisão — composição 1080×1350, logo, gradiente, tipografia e validações de headline implementados.
 - [x] WhatsApp/OpenClaw — provider de envio, bridge local, comandos versionados e plugin `inbound_claim` implementados; instalação no Gateway é o próximo smoke test.
 - [ ] Meta — adaptador Graph/OAuth implementado, mas OAuth da Página, token e revisão do app ainda exigem ação no painel Meta.

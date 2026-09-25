@@ -6,9 +6,9 @@
 2. Execute `npm install` e `npm run setup:research` usando Python 3.12+ para fixar o repositório `last30days` no SHA registrado em `config/last30days.lock.json`.
 3. Execute `npm test` e `npm run doctor`.
 
-O lote só roda quando `AI_FREE_TIER_CONFIRMED=true`, `CF_ACCOUNT_ID`, `CF_API_TOKEN` estiverem preenchidos e os modelos mantiverem a lista gratuita permitida. Não há fallback automático para serviço pago ou banco de imagens: cada arte passa por geração de imagem via IA.
+O lote usa o caminho do OpenClaw/Codex quando `OPENCLAW_ENABLED=true` (ou `OPENCLAW_AI_ENABLED=true`). O comando chama o Gateway com `OPENCLAW_AI_MODEL` e não permite fallback para outro provedor. A alternativa Cloudflare só é usada quando o caminho OpenClaw estiver desativado, com `AI_FREE_TIER_CONFIRMED=true`, `CF_ACCOUNT_ID` e `CF_API_TOKEN` preenchidos e modelos na lista gratuita permitida. Não há fallback automático para serviço pago ou banco de imagens: cada arte passa por geração de imagem via IA.
 
-No servidor, o worker já está ativo em modo seguro (`AI_FREE_TIER_CONFIRMED=false` e `META_PUBLISH_ENABLED=false`). Para liberar a primeira geração, preencha o `.env` privado com uma conta Cloudflare Workers AI que você confirmou como gratuita e reinicie `vvc-autopost.service`. O código não compra créditos nem habilita faturamento.
+No servidor, o worker permanece com `META_PUBLISH_ENABLED=false`. A conta Codex do OpenClaw é a rota primária; se estiver em cooldown ou sem franquia, o lote fica bloqueado e não troca de conta silenciosamente. O código não compra créditos nem habilita faturamento.
 
 ## Meta
 

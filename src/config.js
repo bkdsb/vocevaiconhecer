@@ -38,6 +38,11 @@ export function loadConfig(env = process.env, cwd = process.cwd()) {
     cfAccountId: env.CF_ACCOUNT_ID || '',
     cfApiToken: env.CF_API_TOKEN || '',
     aiFreeTierConfirmed: bool(env.AI_FREE_TIER_CONFIRMED, false),
+    // An already enabled OpenClaw deployment is the natural default for the
+    // subscription-backed AI path; OPENCLAW_AI_ENABLED can still opt out.
+    openclawAiEnabled: bool(env.OPENCLAW_AI_ENABLED, bool(env.OPENCLAW_ENABLED, false)),
+    openclawAiModel: env.OPENCLAW_AI_MODEL || 'openai/gpt-5.6-sol',
+    openclawAiAgent: env.OPENCLAW_AI_AGENT || 'main',
     textModel: env.AI_TEXT_MODEL || '@cf/meta/llama-3.1-8b-instruct',
     imageModel: env.AI_IMAGE_MODEL || '@cf/black-forest-labs/flux-1-schnell',
     openclawBin: env.OPENCLAW_BIN || 'openclaw',
@@ -66,6 +71,7 @@ export function publicConfig(config) {
     metaPublishEnabled: config.metaPublishEnabled,
     aiConfigured: Boolean(config.cfAccountId && config.cfApiToken),
     aiFreeTierConfirmed: config.aiFreeTierConfirmed,
+    openclawAiConfigured: Boolean(config.openclawAiEnabled),
     openclawConfigured: Boolean(config.openclawEnabled && config.whatsappTarget),
     researchDir: config.last30daysDir,
   };

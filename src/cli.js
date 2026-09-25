@@ -23,6 +23,10 @@ function pastGenerationTime(date, timezone, generationTime) {
   return hour * 60 + minute >= (targetHour * 60 + targetMinute);
 }
 
+function aiReady(config) {
+  return config.openclawAiEnabled || (config.aiFreeTierConfirmed && config.cfAccountId && config.cfApiToken);
+}
+
 async function workerTick({ config, store }) {
   const now = new Date();
   if (config.metaPublishEnabled) {
@@ -31,7 +35,7 @@ async function workerTick({ config, store }) {
   }
   const latest = store.latestBatch();
   const generatedToday = latest && localDay(new Date(latest.created_at), config.timezone) === localDay(now, config.timezone);
-  if (!generatedToday && pastGenerationTime(now, config.timezone, config.generationTime) && config.aiFreeTierConfirmed && config.cfAccountId && config.cfApiToken) {
+  if (!generatedToday && pastGenerationTime(now, config.timezone, config.generationTime) && aiReady(config)) {
     try {
       const result = await createDailyBatch({ config, store, ai: createAIProvider(config), messenger: createOpenClawProvider(config), now });
       console.log(JSON.stringify({ worker: 'batch_created', ...result }));
@@ -49,7 +53,7 @@ async function main() {
   try {
     if (command === 'status') { console.log(JSON.stringify(store.latestBatch() || { status: 'none' }, null, 2)); return; }
     if (command === 'batch') {
-      if (!config.aiFreeTierConfirmed || !config.cfAccountId || !config.cfApiToken) throw new Error('Configure a IA gratuita no .env antes de gerar o lote.');
+      if (!aiReady(config)) throw new Error('Configure o provedor de IA no .env antes de gerar o lote.');
       const ai = createAIProvider(config); const messenger = createOpenClawProvider(config); const meta = createMetaProvider(config);
       const result = await createDailyBatch({ config, store, ai, messenger });
       console.log(JSON.stringify(result, null, 2));
