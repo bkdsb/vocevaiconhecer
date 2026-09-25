@@ -1,6 +1,6 @@
 # Plano de implementação — Você Vai Conhecer
 
-Atualizado em 2026-09-24. Repositório oficial: https://github.com/bkdsb/vocevaiconhecer.
+Atualizado em 2026-09-25. Repositório oficial: https://github.com/bkdsb/vocevaiconhecer.
 
 ## Resultado esperado
 
@@ -35,6 +35,18 @@ Gerar diariamente um lote de oito publicações em português: quatro curiosidad
 - Publicação final exige uma página autorizada pelo usuário via Meta. Se autenticação/MFA ou pareamento QR exigirem intervenção humana, concluir toda a parte independente e registrar o ponto exato pendente.
 
 ## Progresso
+
+### Continuação de 25/09 — validação real, sem publicação
+
+Os checks abaixo registram implementação, não integração ponta a ponta. A revisão encontrou lacunas; o sistema ainda não está pronto para produção.
+
+1. Corrigir pausa/retomada, horários vencidos, concorrência e repetição após falha; ampliar testes.
+2. Integrar texto via conta OAuth do Codex no OpenClaw, com editor isolado e sem ferramentas; validar chamada real. O probe OAuth passou em 24/09, mas ainda não comprova execução do agente.
+3. Produzir uma prévia com imagem por IA, fontes reais e proveniência explícita; não chamar tema antigo de tendência recente sem evidência.
+4. Exigir datas e separar descoberta last30days de verificação editorial. Sem evidência suficiente, bloquear o lote.
+5. Implantar e subir código/testes/documentação; manter geração diária e publicação desativadas até validação das imagens automáticas, WhatsApp e Meta.
+
+Pendências externas: rotação do segredo Meta exposto, autorização da Página e validação da franquia de imagens. Nunca copiar tokens para o Git.
 
 - [x] Plano registrado antes da implementação.
 - [x] Inventário e contratos — app Meta, host OpenClaw e chave SSH foram localizados; segredos continuam fora do Git.

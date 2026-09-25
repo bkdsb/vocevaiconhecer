@@ -8,6 +8,7 @@ export async function openDatabase(dataDir) {
   db.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA foreign_keys = ON;
+    PRAGMA busy_timeout = 5000;
     CREATE TABLE IF NOT EXISTS batches (
       id TEXT PRIMARY KEY, created_at TEXT NOT NULL, status TEXT NOT NULL,
       approved_at TEXT, paused_at TEXT, warning TEXT
@@ -28,6 +29,14 @@ export async function openDatabase(dataDir) {
     CREATE INDEX IF NOT EXISTS posts_status_idx ON posts(status);
     CREATE INDEX IF NOT EXISTS events_batch_idx ON events(batch_id);
   `);
+  // Additive migrations preserve existing drafts and approvals. Old publications
+  // without an integrity hash stay blocked until reviewed again.
+  const columns = (table) => new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name));
+  if (!columns('batches').has('local_day')) db.exec('ALTER TABLE batches ADD COLUMN local_day TEXT');
+  for (const field of ['content_hash', 'publishing_at']) {
+    if (!columns('posts').has(field)) db.exec(`ALTER TABLE posts ADD COLUMN ${field} TEXT`);
+  }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS batches_day_idx ON batches(local_day) WHERE local_day IS NOT NULL');
   return db;
 }
 
@@ -38,11 +47,12 @@ export function createStore(db) {
   const addEvent = db.prepare('INSERT INTO events(created_at,type,batch_id,post_id,payload_json) VALUES(?,?,?,?,?)');
   return {
     close() { db.close(); },
-    createBatch({ id, createdAt = new Date().toISOString(), warning = null }) {
-      db.prepare('INSERT INTO batches(id,created_at,status,warning) VALUES(?,?,?,?)').run(id, createdAt, 'draft', warning);
+    createBatch({ id, createdAt = new Date().toISOString(), warning = null, localDay = null }) {
+      db.prepare('INSERT INTO batches(id,created_at,status,warning,local_day) VALUES(?,?,?,?,?)').run(id, createdAt, 'draft', warning, localDay);
       addEvent.run(createdAt, 'batch_created', id, null, json({ warning }));
       return id;
     },
+    batchForDay(day) { return db.prepare('SELECT id,status FROM batches WHERE local_day=?').get(day); },
     insertPost(post) {
       db.prepare(`INSERT INTO posts
         (id,batch_id,slot,category,topic,version,headline,caption,image_path,sources_json,trend_json,status)
@@ -50,6 +60,7 @@ export function createStore(db) {
         post.id, post.batchId, post.slot, post.category, post.topic, post.version,
         post.headline, post.caption, post.imagePath || null, json(post.sources), json(post.trend), post.status || 'pending_approval',
       );
+      if (post.contentHash) db.prepare('UPDATE posts SET content_hash=? WHERE id=?').run(post.contentHash, post.id);
       addEvent.run(new Date().toISOString(), 'post_created', post.batchId, post.id, json({ version: post.version }));
     },
     getBatch(id) {
@@ -68,23 +79,46 @@ export function createStore(db) {
       values.push(id); db.prepare(`UPDATE batches SET ${fields.join(',')} WHERE id=?`).run(...values);
       addEvent.run(new Date().toISOString(), `batch_${status}`, id, null, json(extra));
     },
-    approvePost(id) {
-      const now = new Date().toISOString();
+    approvePost(id, now = new Date().toISOString()) {
       const post = this.getPost(id);
       if (!post) return null;
-      db.prepare("UPDATE posts SET status='approved', approved_at=?, last_error=NULL WHERE id=? AND status IN ('pending_approval','rejected')").run(now, id);
+      const result = db.prepare("UPDATE posts SET status='approved', approved_at=?, last_error=NULL WHERE id=? AND status IN ('pending_approval','rejected')").run(now, id);
+      if (!result.changes) return null;
       addEvent.run(now, 'post_approved', post.batch_id, id, json({ version: post.version }));
       return this.getPost(id);
     },
     rejectPost(id, reason = 'Rejeitado pelo usuário') {
       const post = this.getPost(id); if (!post) return null;
-      db.prepare("UPDATE posts SET status='rejected', last_error=? WHERE id=? AND status='pending_approval'").run(reason, id);
+      const result = db.prepare("UPDATE posts SET status='rejected', last_error=?,approved_at=NULL WHERE id=? AND status IN ('pending_approval','approved','scheduled')").run(reason, id);
+      if (!result.changes) return null;
       addEvent.run(new Date().toISOString(), 'post_rejected', post.batch_id, id, json({ reason }));
       return this.getPost(id);
     },
     markScheduled(id, at) { db.prepare("UPDATE posts SET status='scheduled',scheduled_at=? WHERE id=? AND status='approved'").run(at, id); },
-    markPublished(id, result) { db.prepare("UPDATE posts SET status='published',published_at=?,meta_photo_id=?,meta_post_id=?,last_error=NULL WHERE id=?").run(new Date().toISOString(), result.id, result.postId, id); },
+    reschedule(id, at) { db.prepare("UPDATE posts SET scheduled_at=? WHERE id=? AND status='scheduled'").run(at, id); },
+    reservedTimes(excludeIds = []) {
+      return db.prepare("SELECT id,scheduled_at FROM posts WHERE status IN ('scheduled','publishing','published','publication_unknown') AND scheduled_at IS NOT NULL").all().filter((row) => !excludeIds.includes(row.id)).map((row) => row.scheduled_at);
+    },
+    transaction(fn) {
+      db.exec('BEGIN IMMEDIATE');
+      try { const value = fn(); db.exec('COMMIT'); return value; }
+      catch (error) { db.exec('ROLLBACK'); throw error; }
+    },
+    claimPublication(id, now, earliest, spacingCutoff) {
+      // One atomic durable claim, including batch state, approval and global
+      // spacing. A crash leaves 'publishing': never retry that post blindly.
+      return Boolean(db.prepare(`UPDATE posts SET status='publishing',publishing_at=?
+        WHERE id=? AND status='scheduled' AND approved_at IS NOT NULL
+        AND content_hash IS NOT NULL
+        AND julianday(scheduled_at)<=julianday(?) AND julianday(scheduled_at)>=julianday(?)
+        AND EXISTS(SELECT 1 FROM batches WHERE batches.id=posts.batch_id AND batches.status='scheduled')
+        AND NOT EXISTS(SELECT 1 FROM posts p WHERE p.status='publishing'
+          OR (p.publishing_at IS NOT NULL AND julianday(p.publishing_at)>julianday(?)))`).run(now, id, now, earliest, spacingCutoff).changes);
+    },
+    invalidatePost(id, reason) { db.prepare("UPDATE posts SET status='pending_approval',approved_at=NULL,scheduled_at=NULL,last_error=? WHERE id=? AND status='scheduled'").run(reason, id); },
+    markPublished(id, result, now = new Date().toISOString()) { db.prepare("UPDATE posts SET status='published',published_at=?,meta_photo_id=?,meta_post_id=?,last_error=NULL WHERE id=? AND status='publishing'").run(now, result.id, result.postId ?? null, id); },
     markUnknown(id, error) { db.prepare("UPDATE posts SET status='publication_unknown',last_error=? WHERE id=?").run(error, id); },
+    markFailed(id, error) { db.prepare("UPDATE posts SET status='publication_failed',last_error=? WHERE id=? AND status='publishing'").run(error, id); },
     listReady() { return db.prepare("SELECT id FROM posts WHERE status IN ('approved','scheduled') ORDER BY scheduled_at,slot").all().map(({ id }) => this.getPost(id)); },
     addEvent(type, { batchId = null, postId = null, ...payload } = {}) { addEvent.run(new Date().toISOString(), type, batchId, postId, json(payload)); },
   };

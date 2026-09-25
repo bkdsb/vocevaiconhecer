@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { renderPost } from './render.js';
 import { researchTopics } from './research.js';
@@ -7,7 +7,7 @@ import { researchTopics } from './research.js';
 function hash(value) { return createHash('sha256').update(value).digest('hex'); }
 function shuffled(items, seed) { return [...items].sort((a, b) => hash(`${seed}:${a.id}`).localeCompare(hash(`${seed}:${b.id}`))); }
 function select(candidates, category, count, seed) { return shuffled(candidates.filter((candidate) => candidate.category === category && candidate.publishable), seed).slice(0, count); }
-function slotTimes(date = new Date(), timezone = 'America/Sao_Paulo') {
+export function slotTimes(date = new Date(), timezone = 'America/Sao_Paulo') {
   // Slots are deterministic per local date and stay inside audience-friendly windows.
   const starts = [9 * 60 + 7, 10 * 60 + 42, 12 * 60 + 18, 13 * 60 + 53, 15 * 60 + 29, 17 * 60 + 4, 19 * 60 + 41, 21 * 60 + 16];
   const day = new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
@@ -18,47 +18,103 @@ function slotTimes(date = new Date(), timezone = 'America/Sao_Paulo') {
   return starts.map((minutes) => `${day}T${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}:00${offset}`);
 }
 
+export function contentHash({ headline, caption, sources, imageBuffer }) {
+  return hash(Buffer.concat([Buffer.from(JSON.stringify({ headline, caption, sources })), imageBuffer]));
+}
+
+function futureSlots({ store, config, count, now, excludeIds = [] }) {
+  const reserved = new Set(store.reservedTimes(excludeIds).map((at) => new Date(at).getTime()));
+  const result = [];
+  const threshold = now.getTime() + 5 * 60_000;
+  for (let day = 0; day < 30 && result.length < count; day += 1) {
+    for (const at of slotTimes(new Date(now.getTime() + day * 86_400_000), config.timezone)) {
+      const time = new Date(at).getTime();
+      if (time >= threshold && !reserved.has(time)) { result.push(at); reserved.add(time); }
+      if (result.length === count) break;
+    }
+  }
+  if (result.length !== count) throw new Error('Sem horários livres nos próximos 30 dias.');
+  return result;
+}
+
 export async function createDailyBatch({ config, store, ai, renderer = renderPost, messenger, research = researchTopics, now = new Date() }) {
+  const localDay = new Intl.DateTimeFormat('en-CA', { timeZone: config.timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+  const existing = store.batchForDay(localDay);
+  if (existing) return { batchId: existing.id, skipped: 'already_created_today' };
+  const batchId = `batch_${localDay.replaceAll('-', '')}_${randomUUID().slice(0, 8)}`;
+  try { store.createBatch({ id: batchId, createdAt: now.toISOString(), localDay }); }
+  catch (error) { const claimed = store.batchForDay(localDay); if (claimed) return { batchId: claimed.id, skipped: 'already_created_today' }; throw error; }
+  store.setBatchStatus(batchId, 'generating');
+  try {
   const result = await research(config, { now, onProgress: (event) => messenger?.send?.({ text: `Pesquisa: ${event.type}` }).catch?.(() => {}) });
   const curiosity = select(result.candidates, 'curiosity', 4, now.toISOString());
   const news = select(result.candidates, 'news', 4, `${now.toISOString()}:news`);
   const selected = [...curiosity, ...news];
-  const batchId = `batch_${now.toISOString().slice(0, 10).replaceAll('-', '')}_${randomUUID().slice(0, 8)}`;
-  store.createBatch({ id: batchId, warning: result.warnings.length ? JSON.stringify(result.warnings) : null });
+  if (curiosity.length !== 4 || news.length !== 4) {
+    store.setBatchStatus(batchId, 'blocked', { warning: `Pesquisa incompleta: ${curiosity.length}/4 curiosidades e ${news.length}/4 notícias verificadas.` });
+    return { batchId, selected: 0, warnings: result.warnings, blocked: 'insufficient_verified_sources' };
+  }
   await mkdir(config.outputDir, { recursive: true });
   for (const [index, candidate] of selected.entries()) {
     const copy = await ai.generateCopy(candidate);
     const generated = await ai.generateImage({ prompt: copy.imagePrompt });
     const outputPath = join(config.outputDir, `${batchId}-${index + 1}.png`);
     await renderer({ imageBuffer: generated.buffer, headline: copy.headline, highlights: copy.highlights, outputPath });
-    const version = hash(JSON.stringify({ candidate, copy, image: generated.id })).slice(0, 16);
+    const digest = contentHash({ ...copy, sources: candidate.sources, imageBuffer: await readFile(outputPath) });
+    const version = digest.slice(0, 16);
     const postId = `${batchId}_p${index + 1}`;
-    store.insertPost({ id: postId, batchId, slot: index + 1, category: candidate.category, topic: candidate.topic, version, headline: copy.headline, caption: copy.caption, imagePath: outputPath, sources: candidate.sources, trend: candidate.trend, status: config.approvalRequired ? 'pending_approval' : 'approved' });
-    await messenger?.send?.({ text: `LOTE ${batchId}\nPOST ${index + 1}/8\n${copy.headline}\nCategoria: ${candidate.category}\nTendência: ${candidate.trend.label}\nFontes: ${candidate.sources.map((source) => source.url).join(' | ')}\n\nResponda APROVAR ${postId} ${version.slice(0, 8)} ou REJEITAR ${postId}`, imagePath: outputPath }).catch?.(() => {});
+    store.insertPost({ id: postId, batchId, slot: index + 1, category: candidate.category, topic: candidate.topic, version, contentHash: digest, headline: copy.headline, caption: copy.caption, imagePath: outputPath, sources: candidate.sources, trend: candidate.trend, status: 'pending_approval' });
+    try { await messenger?.send?.({ text: `LOTE ${batchId}\nPOST ${index + 1}/8\n${copy.headline}\n\n${copy.caption}\n\nCategoria: ${candidate.category}\nTendência: ${candidate.trend.label}\nFontes: ${candidate.sources.map((source) => source.url).join(' | ')}\n\nResponda APROVAR ${postId} ${version.slice(0, 8)} ou REJEITAR ${postId}`, imagePath: outputPath }); }
+    catch (error) { store.addEvent('preview_delivery_failed', { batchId, postId, code: error.code || 'DELIVERY_FAILED' }); }
   }
-  if (selected.length !== 8) store.setBatchStatus(batchId, 'blocked', { warning: `Lote incompleto: ${selected.length}/8 posts verificados.` });
-  else if (!config.approvalRequired) scheduleBatch({ store, config, batchId, now });
+  if (store.getBatch(batchId).status !== 'paused') {
+    store.setBatchStatus(batchId, 'pending_approval');
+    scheduleBatch({ store, config, batchId, now: new Date() });
+  }
   return { batchId, selected: selected.length, warnings: result.warnings };
+  } catch (error) {
+    store.setBatchStatus(batchId, 'blocked', { warning: `Geração interrompida: ${error.code || 'GENERATION_FAILED'}. Revisão necessária; sem repetição automática.` });
+    throw error;
+  }
 }
 
 export function scheduleBatch({ store, config, batchId, now = new Date() }) {
+  return store.transaction(() => {
   const batch = store.getBatch(batchId); if (!batch) throw new Error('Lote não encontrado.');
-  if (batch.status === 'blocked') return { scheduled: false, reason: 'blocked_incomplete_batch' };
+  if (!['draft', 'pending_approval'].includes(batch.status)) return { scheduled: false, reason: `batch_${batch.status}` };
   if (batch.posts.length !== 8) return { scheduled: false, reason: 'incomplete_batch' };
-  if (config.approvalRequired && batch.posts.some((post) => post.status !== 'approved')) return { scheduled: false, reason: 'awaiting_approval' };
-  const times = slotTimes(now, config.timezone);
+  if (batch.posts.filter((post) => post.category === 'curiosity').length !== 4) return { scheduled: false, reason: 'invalid_category_split' };
+  if (batch.posts.some((post) => post.status !== 'approved' || !post.approved_at)) return { scheduled: false, reason: 'awaiting_approval' };
+  const times = futureSlots({ store, config, count: 8, now });
   for (const post of batch.posts) { if (post.status === 'approved') store.markScheduled(post.id, times[post.slot - 1]); }
   store.setBatchStatus(batchId, 'scheduled');
   return { scheduled: true, times };
+  });
 }
 
 export async function publishDue({ store, meta, config, now = new Date() }) {
   if (!config.metaPublishEnabled) return { published: 0, skipped: 'META_PUBLISH_ENABLED=false' };
-  const due = store.listReady().filter((post) => post.status === 'scheduled' && post.scheduled_at && new Date(post.scheduled_at) <= now);
+  const earliest = new Date(now.getTime() - 15 * 60_000).toISOString();
+  store.transaction(() => {
+    const expired = store.listReady().filter((post) => post.status === 'scheduled' && store.getBatch(post.batch_id)?.status === 'scheduled' && new Date(post.scheduled_at) < new Date(earliest));
+    const times = futureSlots({ store, config, count: expired.length, now, excludeIds: expired.map((post) => post.id) });
+    expired.forEach((post, index) => store.reschedule(post.id, times[index]));
+  });
+  const due = store.listReady().filter((post) => post.status === 'scheduled' && post.scheduled_at && new Date(post.scheduled_at) <= now && store.getBatch(post.batch_id)?.status === 'scheduled');
   let published = 0;
   for (const post of due) {
-    try { const result = await meta.publishPhoto({ pageId: config.metaPageId, pageToken: config.metaPageToken, imagePath: post.image_path, caption: post.caption, published: true }); store.markPublished(post.id, result); published += 1; }
-    catch (error) { if (error.code === 'PUBLICATION_UNKNOWN') store.markUnknown(post.id, error.message); else store.addEvent('publication_failed', { postId: post.id, error: error.code || 'unknown' }); }
+    let imageBuffer;
+    try { imageBuffer = await readFile(post.image_path); } catch { store.invalidatePost(post.id, 'Imagem não encontrada; requer revisão.'); continue; }
+    if (!post.content_hash || contentHash({ ...post, imageBuffer }) !== post.content_hash) {
+      store.invalidatePost(post.id, 'Conteúdo mudou ou não possui hash; requer nova revisão.'); continue;
+    }
+    if (!store.claimPublication(post.id, now.toISOString(), earliest, new Date(now.getTime() - 60 * 60_000).toISOString())) continue;
+    try { const result = await meta.publishPhoto({ pageId: config.metaPageId, pageToken: config.metaPageToken, imageBuffer, imagePath: post.image_path, caption: post.caption, published: true }); store.markPublished(post.id, result, now.toISOString()); published += 1; }
+    catch (error) {
+      if (['META_REJECTED', 'META_CONFIG', 'META_INVALID_INPUT'].includes(error.code)) store.markFailed(post.id, error.code);
+      else store.markUnknown(post.id, error.code || 'PUBLICATION_UNKNOWN');
+      store.addEvent('publication_failed', { postId: post.id, error: error.code || 'unknown' });
+    }
   }
   return { published, due: due.length };
 }
@@ -72,8 +128,8 @@ export async function handleApprovalCommand({ text, sender, config, store, batch
     const versionPrefix = command === '/VVC' ? parts[3] : parts[2];
     const postBefore = store.getPost(id);
     if (!postBefore) throw Object.assign(new Error('Post não encontrado.'), { code: 'POST_NOT_FOUND' });
-    if (!versionPrefix || !postBefore.version.startsWith(versionPrefix)) throw Object.assign(new Error(`Versão inválida. Use APROVAR ${id} ${postBefore.version.slice(0, 8)}.`), { code: 'STALE_VERSION' });
-    const post = store.approvePost(id);
+    if (!/^[a-f0-9]{8,16}$/i.test(versionPrefix || '') || !postBefore.version.startsWith(versionPrefix)) throw Object.assign(new Error(`Versão inválida. Use APROVAR ${id} ${postBefore.version.slice(0, 8)}.`), { code: 'STALE_VERSION' });
+    const post = store.approvePost(id, now.toISOString());
     if (!post) throw Object.assign(new Error('Post já não está aguardando aprovação.'), { code: 'POST_NOT_PENDING' });
     const targetBatch = store.getBatch(post.batch_id);
     const allApproved = targetBatch?.posts.length > 0 && targetBatch.posts.every((item) => item.status === 'approved');
@@ -81,8 +137,24 @@ export async function handleApprovalCommand({ text, sender, config, store, batch
     return { text: scheduled.scheduled ? `Aprovado ${id}. Todos os posts do lote foram aprovados e estão agendados.` : `Aprovado ${id}.` };
   }
   if (verb === 'REJEITAR' && id) { const post = store.rejectPost(id); if (!post) throw Object.assign(new Error('Post não encontrado.'), { code: 'POST_NOT_FOUND' }); return { text: `Rejeitado ${id}.` }; }
-  const targetBatchId = batchId || store.latestBatch()?.id;
-  if (verb === 'PAUSAR') { if (targetBatchId) store.setBatchStatus(targetBatchId, 'paused', { paused_at: new Date().toISOString() }); return { text: 'Publicação pausada.' }; }
-  if (verb === 'RETOMAR') { if (targetBatchId) store.setBatchStatus(targetBatchId, 'draft', { paused_at: null }); return { text: 'Publicação retomada.' }; }
+  const targetBatchId = id || batchId || store.latestBatch()?.id;
+  const targetBatch = targetBatchId && store.getBatch(targetBatchId);
+  if (verb === 'PAUSAR') {
+    if (!targetBatch) return { text: 'Nenhum lote encontrado para pausar.' };
+    store.setBatchStatus(targetBatchId, 'paused', { paused_at: now.toISOString() });
+    return { text: `Lote ${targetBatchId} pausado. Um envio que já começou pode terminar.` };
+  }
+  if (verb === 'RETOMAR') {
+    if (!targetBatch || targetBatch.status !== 'paused') return { text: 'Nenhum lote pausado encontrado.' };
+    store.transaction(() => {
+      const batch = store.getBatch(targetBatchId);
+      const scheduled = batch.posts.filter((post) => post.status === 'scheduled');
+      const times = futureSlots({ store, config, count: scheduled.length, now, excludeIds: scheduled.map((post) => post.id) });
+      scheduled.forEach((post, index) => store.reschedule(post.id, times[index]));
+      store.setBatchStatus(targetBatchId, batch.posts.length === 8 ? (scheduled.length ? 'scheduled' : 'pending_approval') : 'blocked', { paused_at: null });
+    });
+    scheduleBatch({ store, config, batchId: targetBatchId, now });
+    return { text: `Lote ${targetBatchId} retomado. Somente posts aprovados podem ser agendados; horários antigos foram redistribuídos.` };
+  }
   throw Object.assign(new Error('Use STATUS, APROVAR <id> <versão>, REJEITAR <id>, PAUSAR ou RETOMAR.'), { code: 'INVALID_COMMAND' });
 }
