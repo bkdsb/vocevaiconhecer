@@ -55,6 +55,16 @@ export function createStore(db) {
       return id;
     },
     batchForDay(day) { return db.prepare('SELECT id,status FROM batches WHERE local_day=?').get(day); },
+    releaseBlockedDay(day, now = new Date().toISOString()) {
+      return this.transaction(() => {
+        const row = db.prepare("SELECT id,status,(SELECT COUNT(*) FROM posts WHERE batch_id=batches.id) AS posts FROM batches WHERE local_day=?").get(day);
+        if (!row) return { released: false, reason: 'no_batch' };
+        if (row.status !== 'blocked' || row.posts !== 0) return { released: false, reason: 'not_safe', id: row.id, status: row.status, posts: row.posts };
+        db.prepare('UPDATE batches SET local_day=NULL WHERE id=?').run(row.id);
+        addEvent.run(now, 'batch_retry_released', row.id, null, json({ localDay: day, reason: 'manual_retry' }));
+        return { released: true, id: row.id, day };
+      });
+    },
     insertPost(post) {
       db.prepare(`INSERT INTO posts
         (id,batch_id,slot,category,topic,version,headline,caption,image_path,sources_json,trend_json,status)

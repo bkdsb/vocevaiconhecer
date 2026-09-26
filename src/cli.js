@@ -36,6 +36,11 @@ async function main() {
   const db = await openDatabase(config.dataDir); const store = createStore(db);
   try {
     if (command === 'status') { console.log(JSON.stringify(store.latestBatch() || { status: 'none' }, null, 2)); return; }
+    if (command === 'retry-today') {
+      const day = new Intl.DateTimeFormat('en-CA', { timeZone: config.timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+      console.log(JSON.stringify(store.releaseBlockedDay(day), null, 2));
+      return;
+    }
     if (command === 'batch') {
       if (!aiReady(config)) throw new Error('Configure o provedor de IA no .env antes de gerar o lote.');
       const ai = createAIProvider(config); const messenger = createOpenClawProvider(config);
