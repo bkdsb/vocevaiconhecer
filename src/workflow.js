@@ -48,26 +48,37 @@ export async function createDailyBatch({ config, store, ai, renderer = renderPos
   let notices = Promise.resolve();
   let verificationAnnounced = false;
   const notify = (text) => {
-    notices = notices.then(() => messenger?.send?.({ text: `LOTE ${batchId}\n${text}` }))
+    notices = notices.then(() => messenger?.send?.({ text }))
       .catch((error) => { store.addEvent('progress_delivery_failed', { batchId, code: safeErrorCode(error, 'DELIVERY_FAILED') }); });
     return notices;
   };
   try {
-  await notify('Iniciando a pesquisa de curiosidades e notícias dos últimos 15 dias.');
-  const result = await research(config, { now, onProgress: (event) => {
+  await notify('🔎 Estou buscando boas pautas recentes e conferindo as fontes.');
+  const researchOptions = { now, onProgress: (event) => {
     if (event.type === 'verification_started' && !verificationAnnounced) {
       verificationAnnounced = true;
-      notify('Pesquisa coletada. Conferindo datas, fontes e afirmações dos candidatos.');
+      notify('✅ Encontrei boas pautas. Agora estou checando datas, fontes e afirmações antes de criar as artes.');
     }
-  } });
-  const verified = result.candidates.filter((candidate) => candidate.publishable);
-  await notify(`Pesquisa concluída: ${result.candidates.length} candidatos analisados; ${verified.filter((candidate) => candidate.category === 'curiosity').length} curiosidades e ${verified.filter((candidate) => candidate.category === 'news').length} notícias verificadas.`);
-  const curiosity = select(result.candidates, 'curiosity', 4, now.toISOString());
-  const news = select(result.candidates, 'news', 4, `${now.toISOString()}:news`);
+  } };
+  let result = await research(config, researchOptions);
+  let verified = result.candidates.filter((candidate) => candidate.publishable);
+  let curiosity = select(result.candidates, 'curiosity', 4, now.toISOString());
+  let news = select(result.candidates, 'news', 4, `${now.toISOString()}:news`);
+  if (curiosity.length !== 4 || news.length !== 4) {
+    await notify('🔄 A primeira busca não fechou as 8 pautas com qualidade. Vou ampliar a seleção e conferir uma segunda vez.');
+    const retry = await research(config, researchOptions);
+    const retryCuriosity = select(retry.candidates, 'curiosity', 4, `${now.toISOString()}:retry`);
+    const retryNews = select(retry.candidates, 'news', 4, `${now.toISOString()}:news:retry`);
+    if (Math.min(retryCuriosity.length, retryNews.length) >= Math.min(curiosity.length, news.length)) {
+      result = retry; curiosity = retryCuriosity; news = retryNews;
+      verified = result.candidates.filter((candidate) => candidate.publishable);
+    }
+  }
+  await notify(`📚 Verificação concluída: ${verified.filter((candidate) => candidate.category === 'curiosity').length} curiosidades e ${verified.filter((candidate) => candidate.category === 'news').length} notícias prontas para produção.`);
   const selected = [...curiosity, ...news];
   if (curiosity.length !== 4 || news.length !== 4) {
     store.setBatchStatus(batchId, 'blocked', { warning: `Pesquisa incompleta: ${curiosity.length}/4 curiosidades e ${news.length}/4 notícias verificadas.` });
-    await notify(`Lote bloqueado: fontes verificadas insuficientes (${curiosity.length}/4 curiosidades; ${news.length}/4 notícias). Código: INSUFFICIENT_VERIFIED_SOURCES. Nenhum post foi gerado.`);
+    await notify(`⚠️ Hoje ainda não consegui reunir 8 pautas com fontes fortes o suficiente para o padrão da página. Encontrei ${curiosity.length} curiosidades e ${news.length} notícias aprovadas na checagem. Não gerei nem publiquei nada incompleto.`);
     return { batchId, selected: 0, warnings: result.warnings, blocked: 'insufficient_verified_sources' };
   }
   await mkdir(config.outputDir, { recursive: true });
@@ -80,7 +91,7 @@ export async function createDailyBatch({ config, store, ai, renderer = renderPos
     const version = digest.slice(0, 16);
     const postId = `${batchId}_p${index + 1}`;
     store.insertPost({ id: postId, batchId, slot: index + 1, category: candidate.category, topic: candidate.topic, version, contentHash: digest, headline: copy.headline, caption: copy.caption, imagePath: outputPath, sources: candidate.sources, trend: candidate.trend, status: 'pending_approval' });
-    try { await messenger?.send?.({ text: `LOTE ${batchId}\nPOST ${index + 1}/8\n${copy.headline}\n\n${copy.caption}\n\nCategoria: ${candidate.category}\nTendência: ${candidate.trend.label}\nFontes: ${candidate.sources.map((source) => source.url).join(' | ')}\n\nResponda APROVAR ${postId} ${version.slice(0, 8)} ou REJEITAR ${postId}`, imagePath: outputPath }); }
+    try { await messenger?.send?.({ text: `🖼️ *Prévia ${index + 1} de 8*\n\n*${copy.headline}*\n\n${copy.caption}\n\n📌 ${candidate.category === 'curiosity' ? 'Curiosidade' : 'Notícia'}\n🔗 Fontes: ${candidate.sources.map((source) => source.url).join(' | ')}\n\nResponda *APROVAR ${index + 1}* ou *REJEITAR ${index + 1}*.`, imagePath: outputPath }); }
     catch (error) { store.addEvent('preview_delivery_failed', { batchId, postId, code: safeErrorCode(error, 'DELIVERY_FAILED') }); }
   }
   if (store.getBatch(batchId).status !== 'paused') {
@@ -91,7 +102,7 @@ export async function createDailyBatch({ config, store, ai, renderer = renderPos
   } catch (error) {
     const code = safeErrorCode(error, 'GENERATION_FAILED');
     store.setBatchStatus(batchId, 'blocked', { warning: `Geração interrompida: ${code}. Revisão necessária; sem repetição automática.` });
-    await notify(`Lote interrompido. Código: ${code}. Os posts deste lote aguardam revisão; não haverá nova tentativa automática hoje.`);
+    await notify('⚠️ A produção foi interrompida antes de concluir as prévias. Nada incompleto será publicado.');
     throw error;
   }
 }
@@ -147,8 +158,12 @@ export async function handleApprovalCommand({ text, sender, config, store, batch
   if (command === 'STATUS' || command === '/VVC' && parts[1]?.toUpperCase() === 'STATUS') return { text: JSON.stringify(store.latestBatch() || { status: 'none' }) };
   const verb = command === '/VVC' ? parts[1]?.toUpperCase() : command; const id = command === '/VVC' ? parts[2] : parts[1];
   if (verb === 'APROVAR' && id) {
-    const versionPrefix = command === '/VVC' ? parts[3] : parts[2];
-    const postBefore = store.getPost(id);
+    const numericSlot = /^([1-8])$/.test(id) ? Number(id) : null;
+    const latest = numericSlot ? store.latestBatch() : null;
+    const resolvedId = numericSlot ? latest?.posts?.find((post) => post.slot === numericSlot)?.id : id;
+    const postBefore = resolvedId ? store.getPost(resolvedId) : null;
+    const suppliedVersion = command === '/VVC' ? parts[3] : parts[2];
+    const versionPrefix = numericSlot && postBefore ? postBefore.version.slice(0, 8) : suppliedVersion;
     if (!postBefore) throw Object.assign(new Error('Post não encontrado.'), { code: 'POST_NOT_FOUND' });
     if (!/^[a-f0-9]{8,16}$/i.test(versionPrefix || '') || !postBefore.version.startsWith(versionPrefix)) throw Object.assign(new Error(`Versão inválida. Use APROVAR ${id} ${postBefore.version.slice(0, 8)}.`), { code: 'STALE_VERSION' });
     let imageBuffer;
@@ -157,12 +172,19 @@ export async function handleApprovalCommand({ text, sender, config, store, batch
     if (!postBefore.content_hash || contentHash({ ...postBefore, imageBuffer }) !== postBefore.content_hash) {
       throw Object.assign(new Error('O conteúdo difere da prévia. Restaure ou gere uma nova versão para revisão.'), { code: 'CONTENT_CHANGED' });
     }
-    const post = store.approvePost(id, now.toISOString(), postBefore);
+    const post = store.approvePost(resolvedId, now.toISOString(), postBefore);
     if (!post) throw Object.assign(new Error('Post já não está aguardando aprovação.'), { code: 'POST_NOT_PENDING' });
     const scheduled = scheduleBatch({ store, config, batchId: post.batch_id, now });
-    return { text: scheduled.scheduled ? `Aprovado ${id}. Os posts aprovados estão agendados.` : `Aprovado ${id}.` };
+    return { text: scheduled.scheduled ? `✅ Prévia ${numericSlot || postBefore.slot} aprovada. As prévias aprovadas estão agendadas.` : `✅ Prévia ${numericSlot || postBefore.slot} aprovada.` };
   }
-  if (verb === 'REJEITAR' && id) { const post = store.rejectPost(id); if (!post) throw Object.assign(new Error('Post não encontrado.'), { code: 'POST_NOT_FOUND' }); return { text: `Rejeitado ${id}.` }; }
+  if (verb === 'REJEITAR' && id) {
+    const numericSlot = /^([1-8])$/.test(id) ? Number(id) : null;
+    const latest = numericSlot ? store.latestBatch() : null;
+    const resolvedId = numericSlot ? latest?.posts?.find((post) => post.slot === numericSlot)?.id : id;
+    const post = resolvedId ? store.rejectPost(resolvedId) : null;
+    if (!post) throw Object.assign(new Error('Post não encontrado.'), { code: 'POST_NOT_FOUND' });
+    return { text: `❌ Prévia ${numericSlot || post.slot} rejeitada.` };
+  }
   const targetBatchId = id || batchId || store.latestBatch()?.id;
   const targetBatch = targetBatchId && store.getBatch(targetBatchId);
   if (verb === 'PAUSAR') {
@@ -182,5 +204,5 @@ export async function handleApprovalCommand({ text, sender, config, store, batch
     scheduleBatch({ store, config, batchId: targetBatchId, now });
     return { text: `Lote ${targetBatchId} retomado. Somente posts aprovados podem ser agendados; horários antigos foram redistribuídos.` };
   }
-  throw Object.assign(new Error('Use STATUS, APROVAR <id> <versão>, REJEITAR <id>, PAUSAR ou RETOMAR.'), { code: 'INVALID_COMMAND' });
+  throw Object.assign(new Error('Use STATUS, APROVAR <1-8>, REJEITAR <1-8>, PAUSAR ou RETOMAR.'), { code: 'INVALID_COMMAND' });
 }

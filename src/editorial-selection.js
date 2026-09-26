@@ -63,10 +63,20 @@ O planejamento posterior quer 4 curiosidades e 4 notícias; você deve avaliar t
 Responda SOMENTE JSON {"decisions":[{"id":"ID EXATO","eligible":true,"category":"curiosity","reason":"motivo editorial"}]}.
 CANDIDATOS_JSON:
 ${JSON.stringify(input)}`;
-      let response;
-      try { response = await modelCall(prompt, { label: 'research-select', agent }); }
-      catch { throw Object.assign(new Error('O classificador editorial está indisponível.'), { code: 'EDITORIAL_SELECTION_FAILED' }); }
-      const reviewed = validateEditorialDecisions(parseResponse(response), batch);
+      let reviewed;
+      let lastError;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const correction = attempt === 0 ? '' : '\nATENÇÃO: a resposta anterior não passou no schema. Devolva exatamente um objeto JSON com decisions, uma decisão para CADA ID recebido, sem campos extras e sem omitir IDs.';
+          const response = await modelCall(prompt + correction, { label: attempt === 0 ? 'research-select' : 'research-select-retry', agent });
+          reviewed = validateEditorialDecisions(parseResponse(response), batch);
+          break;
+        } catch (error) { lastError = error; }
+      }
+      if (!reviewed) {
+        if (lastError?.code === 'EDITORIAL_SELECTION_INVALID') throw lastError;
+        throw Object.assign(new Error('O classificador editorial está indisponível.'), { code: 'EDITORIAL_SELECTION_FAILED' });
+      }
       for (const [index, decision] of reviewed.entries()) {
         decisions.push(issueOnly(batch[index])
           ? { ...decision, eligible: false, reason: 'Issue, pull request ou discussão de suporte do GitHub; fora da linha editorial.' }
