@@ -39,7 +39,7 @@ test('worker uses the persisted day reservation, including failed days, rather t
       store: { latestBatch: never, batchForDay: (day) => { assert.equal(day, '2026-09-25'); return { id: 'reserved', status }; } },
       makeAI: never, makeBatch: never, log: never,
     });
-    assert.deepEqual(result.generation, { batchId: 'reserved', skipped: 'already_created_today' });
+    assert.equal(result.generation.skipped, 'coverage_complete');
   }
 });
 
@@ -58,12 +58,13 @@ test('enabled worker generates once, passes research dependency, and skips a sub
       assert.equal(args.ai, ai);
       assert.equal(args.messenger, messenger);
       assert.equal(args.now, now);
-      days.set(localDay(now, config.timezone), { id: 'generated', status: 'pending_approval' });
+      assert.equal(args.targetDay, localDay(now, config.timezone));
+      days.set(args.targetDay, { id: 'generated', status: 'pending_approval' });
       return { batchId: 'generated', selected: 8 };
     },
   };
   assert.equal((await workerTick(options)).generation.selected, 8);
-  assert.equal((await workerTick(options)).generation.skipped, 'already_created_today');
+  assert.equal((await workerTick(options)).generation.skipped, 'coverage_complete');
   assert.equal(calls, 1);
   assert.equal(logs[0].worker, 'batch_created');
 });

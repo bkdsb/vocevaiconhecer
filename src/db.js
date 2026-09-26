@@ -55,6 +55,13 @@ export function createStore(db) {
       return id;
     },
     batchForDay(day) { return db.prepare('SELECT id,status FROM batches WHERE local_day=?').get(day); },
+    dayCoverage(day) {
+      const batch = db.prepare('SELECT id,status FROM batches WHERE local_day=?').get(day);
+      if (!batch) return { day, batchId: null, status: 'missing', total: 0, pending: 0, approved: 0, scheduled: 0, published: 0, rejected: 0 };
+      const counts = db.prepare(`SELECT status,COUNT(*) AS count FROM posts WHERE batch_id=? GROUP BY status`).all(batch.id);
+      const by = Object.fromEntries(counts.map((row) => [row.status, Number(row.count)]));
+      return { day, batchId: batch.id, status: batch.status, total: Object.values(by).reduce((a,b)=>a+b,0), pending: by.pending_approval || 0, approved: by.approved || 0, scheduled: by.scheduled || 0, published: by.published || 0, rejected: by.rejected || 0 };
+    },
     releaseBlockedDay(day, now = new Date().toISOString()) {
       return this.transaction(() => {
         const row = db.prepare("SELECT id,status,(SELECT COUNT(*) FROM posts WHERE batch_id=batches.id) AS posts FROM batches WHERE local_day=?").get(day);
@@ -84,6 +91,12 @@ export function createStore(db) {
       return { ...batch, posts };
     },
     latestBatch() { const row = db.prepare('SELECT id FROM batches ORDER BY created_at DESC LIMIT 1').get(); return row ? this.getBatch(row.id) : null; },
+    queue() {
+      return db.prepare(`SELECT p.id,p.batch_id,p.slot,p.category,p.headline,p.status,p.approved_at,p.scheduled_at,p.published_at,b.status AS batch_status,b.local_day
+        FROM posts p JOIN batches b ON b.id=p.batch_id
+        WHERE p.status IN ('approved','scheduled','publishing','published','publication_unknown')
+        ORDER BY COALESCE(p.scheduled_at,'9999-12-31'),b.created_at,p.slot`).all();
+    },
     getPost(id) { const row = db.prepare('SELECT * FROM posts WHERE id=?').get(id); return row ? { ...row, sources: parse(row.sources_json, []), trend: parse(row.trend_json, {}) } : null; },
     setBatchStatus(id, status, extra = {}) {
       const fields = ['status=?']; const values = [status];

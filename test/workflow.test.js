@@ -10,7 +10,7 @@ import { contentHash, createDailyBatch, handleApprovalCommand, publishDue, sched
 
 const sender = '+5511999999999';
 const approvalTime = new Date('2026-09-24T10:00:00Z');
-const dueTime = new Date('2026-09-24T12:08:00Z');
+const dueTime = new Date('2026-09-24T13:08:00Z');
 const config = { allowedSenders: [sender], approvalRequired: true, timezone: 'America/Sao_Paulo', metaPublishEnabled: true, metaPageId: '123', metaPageToken: 'test-token' };
 
 async function fixture(t) {
@@ -50,7 +50,7 @@ test('only authorized sender and reviewed version can approve; a complete 4+4 ba
   assert.equal(f.store.getPost('post_1').status, 'approved');
   assert.equal(scheduleBatch({ store: f.store, config, batchId: 'batch_test' }).reason, 'awaiting_approval');
   assert.match((await f.approve('post_8', new Date('2026-09-24T14:00:00Z'))).text, /agendad/);
-  assert.match(f.store.getPost('post_1').scheduled_at, /T12:18:00-03:00$/);
+  assert.match(f.store.getPost('post_1').scheduled_at, /T12:00:00-03:00$/);
   const times = f.store.getBatch('batch_test').posts.map((post) => post.scheduled_at);
   assert.equal(new Set(times).size, 8);
   assert.ok(times.every((at) => new Date(at) > new Date('2026-09-24T14:00:00Z')));
@@ -100,7 +100,7 @@ test('rejected and restored invalidated posts can be explicitly reapproved insid
   assert.equal(f.store.getPost('post_1').status, 'scheduled');
   assert.ok(new Date(f.store.getPost('post_1').scheduled_at) > dueTime);
   assert.equal(f.store.getPost('post_2').scheduled_at, secondSlot);
-  f.store.reschedule('post_1', '2026-09-24T09:07:00-03:00');
+  f.store.reschedule('post_1', '2026-09-24T10:00:00-03:00');
   await writeFile(f.imagePath, 'changed');
   await publishDue({ store: f.store, config, now: dueTime, meta: { publishPhoto: async () => assert.fail('integrity must block publication') } });
   assert.equal(f.store.getPost('post_1').status, 'pending_approval');

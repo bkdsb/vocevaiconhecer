@@ -36,6 +36,13 @@ async function main() {
   const db = await openDatabase(config.dataDir); const store = createStore(db);
   try {
     if (command === 'status') { console.log(JSON.stringify(store.latestBatch() || { status: 'none' }, null, 2)); return; }
+    if (command === 'queue') { console.log(JSON.stringify(store.queue(), null, 2)); return; }
+    if (command === 'coverage') {
+      const today = new Intl.DateTimeFormat('en-CA', { timeZone: config.timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+      const base = new Date(`${today}T12:00:00Z`);
+      const days = Array.from({ length: (config.coverageDaysAhead ?? 2) + 1 }, (_, index) => { const d = new Date(base); d.setUTCDate(d.getUTCDate() + index); return d.toISOString().slice(0, 10); });
+      console.log(JSON.stringify(days.map((day) => store.dayCoverage(day)), null, 2)); return;
+    }
     if (command === 'retry-today') {
       const day = new Intl.DateTimeFormat('en-CA', { timeZone: config.timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
       console.log(JSON.stringify(store.releaseBlockedDay(day), null, 2));

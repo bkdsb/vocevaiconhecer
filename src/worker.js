@@ -7,6 +7,12 @@ export function localDay(date, timezone) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
 }
 
+export function dayOffset(day, offset) {
+  const date = new Date(`${day}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + offset);
+  return date.toISOString().slice(0, 10);
+}
+
 export function pastGenerationTime(date, timezone, generationTime = '08:00') {
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(generationTime)) return false;
   const parts = new Intl.DateTimeFormat('en-GB', { timeZone: timezone, hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(date);
@@ -40,9 +46,12 @@ export async function workerTick({
     result.generation = { skipped: 'before_generation_time' };
     return result;
   }
-  const existing = store.batchForDay(localDay(now, config.timezone));
-  if (existing) {
-    result.generation = { batchId: existing.id, skipped: 'already_created_today' };
+  const today = localDay(now, config.timezone);
+  const horizon = Math.max(0, config.coverageDaysAhead ?? 0);
+  const targetDays = Array.from({ length: horizon + 1 }, (_, index) => dayOffset(today, index));
+  const targetDay = targetDays.find((day) => !store.batchForDay(day));
+  if (!targetDay) {
+    result.generation = { skipped: 'coverage_complete', days: targetDays.map((day) => store.dayCoverage?.(day) || { day }) };
     return result;
   }
   if (!aiReady(config)) {
@@ -50,7 +59,7 @@ export async function workerTick({
     return result;
   }
   try {
-    result.generation = await makeBatch({ config, store, research, now, ai: makeAI(config), messenger: makeMessenger(config) });
+    result.generation = await makeBatch({ config, store, research, now, targetDay, ai: makeAI(config), messenger: makeMessenger(config) });
     log(JSON.stringify({ worker: result.generation.skipped ? 'batch_skipped' : 'batch_created', ...result.generation }));
   } catch (error) {
     result.generation = { error: error.code || 'BATCH_ERROR' };

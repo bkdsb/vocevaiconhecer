@@ -10,7 +10,7 @@ function shuffled(items, seed) { return [...items].sort((a, b) => hash(`${seed}:
 function select(candidates, category, count, seed) { return shuffled(candidates.filter((candidate) => candidate.category === category && candidate.publishable), seed).slice(0, count); }
 export function slotTimes(date = new Date(), timezone = 'America/Sao_Paulo') {
   // Slots are deterministic per local date and stay inside audience-friendly windows.
-  const starts = [9 * 60 + 7, 10 * 60 + 42, 12 * 60 + 18, 13 * 60 + 53, 15 * 60 + 29, 17 * 60 + 4, 19 * 60 + 41, 21 * 60 + 16];
+  const starts = [10 * 60, 11 * 60, 12 * 60, 13 * 60, 18 * 60, 19 * 60, 20 * 60, 21 * 60];
   const day = new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
   const offsetLabel = new Intl.DateTimeFormat('en-US', { timeZone: timezone, timeZoneName: 'longOffset' })
     .formatToParts(date).find((part) => part.type === 'timeZoneName')?.value?.replace('GMT', '') || '+00:00';
@@ -23,8 +23,8 @@ export function contentHash({ headline, caption, sources, imageBuffer }) {
   return hash(Buffer.concat([Buffer.from(JSON.stringify({ headline, caption, sources })), imageBuffer]));
 }
 
-function futureSlots({ store, config, count, now, excludeIds = [] }) {
-  const reserved = new Set(store.reservedTimes(excludeIds).map((at) => new Date(at).getTime()));
+function futureSlots({ store, config, count, now, excludeIds = [], reservedExtra = [] }) {
+  const reserved = new Set([...store.reservedTimes(excludeIds), ...reservedExtra].map((at) => new Date(at).getTime()));
   const result = [];
   const threshold = now.getTime() + 5 * 60_000;
   for (let day = 0; day < 30 && result.length < count; day += 1) {
@@ -38,8 +38,19 @@ function futureSlots({ store, config, count, now, excludeIds = [] }) {
   return result;
 }
 
-export async function createDailyBatch({ config, store, ai, renderer = renderPost, messenger, research = researchTopics, now = new Date() }) {
-  const localDay = new Intl.DateTimeFormat('en-CA', { timeZone: config.timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+function plannedSlots({ store, config, count, now, targetDay, excludeIds = [] }) {
+  if (!targetDay) return futureSlots({ store, config, count, now, excludeIds });
+  const reserved = new Set(store.reservedTimes(excludeIds).map((at) => new Date(at).getTime()));
+  const threshold = now.getTime() + 5 * 60_000;
+  const targetDate = new Date(`${targetDay}T12:00:00Z`);
+  const preferred = slotTimes(targetDate, config.timezone).filter((at) => new Date(at).getTime() >= threshold && !reserved.has(new Date(at).getTime()));
+  const selected = preferred.slice(0, count);
+  if (selected.length === count) return selected;
+  return selected.concat(futureSlots({ store, config, count: count - selected.length, now, excludeIds, reservedExtra: selected }));
+}
+
+export async function createDailyBatch({ config, store, ai, renderer = renderPost, messenger, research = researchTopics, now = new Date(), targetDay = null }) {
+  const localDay = targetDay || new Intl.DateTimeFormat('en-CA', { timeZone: config.timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
   const existing = store.batchForDay(localDay);
   if (existing) return { batchId: existing.id, skipped: 'already_created_today' };
   const batchId = `batch_${localDay.replaceAll('-', '')}_${randomUUID().slice(0, 8)}`;
@@ -100,7 +111,7 @@ export function scheduleBatch({ store, config, batchId, now = new Date() }) {
   if (!previouslyScheduled && batch.posts.some((post) => post.status !== 'approved' || !post.approved_at)) return { scheduled: false, reason: 'awaiting_approval' };
   const approved = batch.posts.filter((post) => post.status === 'approved' && post.approved_at);
   if (!approved.length) return { scheduled: false, reason: 'no_approved_posts' };
-  const times = futureSlots({ store, config, count: approved.length, now });
+  const times = plannedSlots({ store, config, count: approved.length, now, targetDay: batch.local_day });
   approved.forEach((post, index) => store.markScheduled(post.id, times[index]));
   store.setBatchStatus(batchId, 'scheduled', { approved_at: batch.approved_at || now.toISOString() });
   return { scheduled: true, times };
