@@ -52,10 +52,23 @@ function plannedSlots({ store, config, count, now, targetDay, excludeIds = [] })
 export async function createDailyBatch({ config, store, ai, renderer = renderPost, messenger, research = researchTopics, now = new Date(), targetDay = null }) {
   const localDay = targetDay || new Intl.DateTimeFormat('en-CA', { timeZone: config.timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
   const existing = store.batchForDay(localDay);
-  if (existing) return { batchId: existing.id, skipped: 'already_created_today' };
-  const batchId = `batch_${localDay.replaceAll('-', '')}_${randomUUID().slice(0, 8)}`;
-  try { store.createBatch({ id: batchId, createdAt: now.toISOString(), localDay, status: 'generating' }); }
-  catch (error) { const claimed = store.batchForDay(localDay); if (claimed) return { batchId: claimed.id, skipped: 'already_created_today' }; throw error; }
+  let batchId;
+  let repairing = false;
+  let originalStatus = null;
+  if (existing) {
+    const current = store.getBatch(existing.id);
+    const needsRepair = current && (current.posts.length < 8 || current.posts.some((post) => post.status === 'rejected'));
+    const repairable = current && ['blocked', 'pending_approval', 'scheduled'].includes(current.status) && needsRepair;
+    if (!repairable) return { batchId: existing.id, skipped: 'already_created_today' };
+    batchId = existing.id;
+    repairing = true;
+    originalStatus = current.status;
+    if (originalStatus !== 'scheduled') store.setBatchStatus(batchId, 'generating', { warning: null });
+  } else {
+    batchId = `batch_${localDay.replaceAll('-', '')}_${randomUUID().slice(0, 8)}`;
+    try { store.createBatch({ id: batchId, createdAt: now.toISOString(), localDay, status: 'generating' }); }
+    catch (error) { const claimed = store.batchForDay(localDay); if (claimed) return { batchId: claimed.id, skipped: 'already_created_today' }; throw error; }
+  }
   let notices = Promise.resolve();
   const notify = (text) => {
     notices = notices.then(() => messenger?.send?.({ text }))
@@ -65,37 +78,50 @@ export async function createDailyBatch({ config, store, ai, renderer = renderPos
   try {
   await notify('🔎 Estou buscando boas pautas recentes e conferindo as fontes.');
   const result = await research(config, { now, onProgress: () => {} });
-  const curiosity = select(result.candidates, 'curiosity', 4, now.toISOString());
-  const news = select(result.candidates, 'news', 4, `${now.toISOString()}:news`);
-  if (curiosity.length === 4 && news.length === 4) await notify('✍️ Separei 8 pautas dos últimos 15 dias. Agora vou criar as imagens e legendas para sua aprovação.');
-  const selected = [...curiosity, ...news];
-  if (curiosity.length !== 4 || news.length !== 4) {
-    store.setBatchStatus(batchId, 'blocked', { warning: `Pesquisa incompleta no last30days: ${curiosity.length}/4 curiosidades e ${news.length}/4 notícias.` });
-    await notify(`⚠️ O last30days encontrou ${curiosity.length} curiosidades e ${news.length} notícias utilizáveis nos últimos 15 dias. Não publiquei nada incompleto.`);
-    return { batchId, selected: 0, warnings: result.warnings, blocked: 'insufficient_topics' };
+  const before = store.getBatch(batchId);
+  const occupied = new Set(before.posts.filter((post) => post.status !== 'rejected').map((post) => post.slot));
+  const missingSlots = Array.from({ length: 8 }, (_, index) => index + 1).filter((slot) => !occupied.has(slot));
+  const usedTopics = new Set(before.posts.map((post) => post.topic));
+  const available = result.candidates.filter((candidate) => !usedTopics.has(candidate.topic));
+  const curiosityNeeded = missingSlots.filter((slot) => slot <= 4).length;
+  const newsNeeded = missingSlots.filter((slot) => slot > 4).length;
+  const curiosity = select(available, 'curiosity', curiosityNeeded, `${now.toISOString()}:curiosity:${localDay}`);
+  const news = select(available, 'news', newsNeeded, `${now.toISOString()}:news:${localDay}`);
+  if (curiosity.length !== curiosityNeeded || news.length !== newsNeeded) {
+    const warning = `Pesquisa incompleta no last30days: faltam ${curiosityNeeded - curiosity.length} curiosidades e ${newsNeeded - news.length} notícias para completar o dia.`;
+    store.setBatchStatus(batchId, originalStatus === 'scheduled' ? 'scheduled' : 'blocked', { warning });
+    await notify('⚠️ Ainda faltam algumas pautas para completar a grade. O que já foi aprovado ou agendado foi preservado.');
+    return { batchId, selected: 0, warnings: result.warnings, blocked: 'insufficient_topics', repairing };
   }
+  const curiosityQueue = [...curiosity];
+  const newsQueue = [...news];
+  const plan = missingSlots.map((slot) => ({ slot, candidate: slot <= 4 ? curiosityQueue.shift() : newsQueue.shift() }));
+  if (plan.length) await notify(repairing
+    ? `🧩 Vou completar ${plan.length} espaço(s) que faltam sem mexer no que você já aprovou.`
+    : '✍️ Separei 8 pautas dos últimos 15 dias. Agora vou criar as imagens e legendas para sua aprovação.');
   await mkdir(config.outputDir, { recursive: true });
-  for (const [index, candidate] of selected.entries()) {
+  for (const { slot, candidate } of plan) {
     const copy = await ai.generateCopy(candidate);
     const generated = await ai.generateImage({ prompt: copy.imagePrompt });
-    const outputPath = join(config.outputDir, `${batchId}-${index + 1}.png`);
+    const outputPath = join(config.outputDir, `${batchId}-${slot}.png`);
     await renderer({ imageBuffer: generated.buffer, headline: copy.headline, highlights: copy.highlights, outputPath });
     const digest = contentHash({ ...copy, sources: candidate.sources, imageBuffer: await readFile(outputPath) });
     const version = digest.slice(0, 16);
-    const postId = `${batchId}_p${index + 1}`;
-    store.insertPost({ id: postId, batchId, slot: index + 1, category: candidate.category, topic: candidate.topic, version, contentHash: digest, headline: copy.headline, caption: copy.caption, imagePath: outputPath, sources: candidate.sources, trend: candidate.trend, status: 'pending_approval' });
-    try { await messenger?.send?.({ text: `🖼️ *Prévia ${index + 1} de 8*\n\n*${copy.headline}*\n\n${copy.caption}\n\n📌 ${candidate.category === 'curiosity' ? 'Curiosidade' : 'Notícia'}\n🔗 Fontes: ${candidate.sources.map((source) => source.url).join(' | ')}\n\nResponda *APROVAR ${index + 1}* ou *REJEITAR ${index + 1}*.`, imagePath: outputPath }); }
+    if (repairing) store.removeRejectedSlot(batchId, slot);
+    const postId = repairing ? `${batchId}_p${slot}_${randomUUID().slice(0, 4)}` : `${batchId}_p${slot}`;
+    store.insertPost({ id: postId, batchId, slot, category: candidate.category, topic: candidate.topic, version, contentHash: digest, headline: copy.headline, caption: copy.caption, imagePath: outputPath, sources: candidate.sources, trend: candidate.trend, status: 'pending_approval' });
+    try { await messenger?.send?.({ text: `🖼️ *Prévia ${slot} de 8*\n\n*${copy.headline}*\n\n${copy.caption}\n\n📌 ${candidate.category === 'curiosity' ? 'Curiosidade' : 'Notícia'}\n🔗 Fontes: ${candidate.sources.map((source) => source.url).join(' | ')}\n\nResponda *APROVAR ${slot}* ou *REJEITAR ${slot}*.`, imagePath: outputPath }); }
     catch (error) { store.addEvent('preview_delivery_failed', { batchId, postId, code: safeErrorCode(error, 'DELIVERY_FAILED') }); }
   }
   if (store.getBatch(batchId).status !== 'paused') {
-    store.setBatchStatus(batchId, 'pending_approval');
+    if (originalStatus !== 'scheduled') store.setBatchStatus(batchId, 'pending_approval', { warning: null });
     scheduleBatch({ store, config, batchId, now: new Date() });
   }
-  return { batchId, selected: selected.length, warnings: result.warnings };
+  return { batchId, selected: plan.length, repaired: repairing, warnings: result.warnings };
   } catch (error) {
     const code = safeErrorCode(error, 'GENERATION_FAILED');
-    store.setBatchStatus(batchId, 'blocked', { warning: `Geração interrompida: ${code}. Revisão necessária; sem repetição automática.` });
-    await notify('⚠️ A produção foi interrompida antes de concluir as prévias. Nada incompleto será publicado.');
+    store.setBatchStatus(batchId, originalStatus === 'scheduled' ? 'scheduled' : 'blocked', { warning: `Geração interrompida: ${code}. O que já estava aprovado ou agendado foi preservado.` });
+    await notify('⚠️ Não consegui concluir todas as novas prévias. O que você já aprovou ou agendou foi preservado.');
     throw error;
   }
 }

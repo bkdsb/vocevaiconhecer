@@ -72,6 +72,15 @@ export function createStore(db) {
         return { released: true, id: row.id, day };
       });
     },
+    removeRejectedSlot(batchId, slot) {
+      return this.transaction(() => {
+        const row = db.prepare("SELECT id FROM posts WHERE batch_id=? AND slot=? AND status='rejected'").get(batchId, slot);
+        if (!row) return false;
+        addEvent.run(new Date().toISOString(), 'post_replacement_started', batchId, row.id, json({ slot }));
+        db.prepare("DELETE FROM posts WHERE id=? AND status='rejected'").run(row.id);
+        return true;
+      });
+    },
     insertPost(post) {
       db.prepare(`INSERT INTO posts
         (id,batch_id,slot,category,topic,version,headline,caption,image_path,sources_json,trend_json,status)

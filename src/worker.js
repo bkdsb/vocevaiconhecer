@@ -49,9 +49,11 @@ export async function workerTick({
   const today = localDay(now, config.timezone);
   const horizon = Math.max(0, config.coverageDaysAhead ?? 0);
   const targetDays = Array.from({ length: horizon + 1 }, (_, index) => dayOffset(today, index));
-  const targetDay = targetDays.find((day) => !store.batchForDay(day));
+  const coverage = targetDays.map((day) => store.dayCoverage?.(day) || { day, batchId: store.batchForDay(day)?.id || null, status: store.batchForDay(day)?.status || 'missing', total: store.batchForDay(day) ? 8 : 0, rejected: 0 });
+  const targetDay = coverage.find((item) => item.status === 'missing'
+    || item.status !== 'generating' && ['blocked', 'pending_approval', 'scheduled'].includes(item.status) && (item.total < 8 || item.rejected > 0))?.day;
   if (!targetDay) {
-    result.generation = { skipped: 'coverage_complete', days: targetDays.map((day) => store.dayCoverage?.(day) || { day }) };
+    result.generation = { skipped: 'coverage_complete', days: coverage };
     return result;
   }
   if (!aiReady(config)) {

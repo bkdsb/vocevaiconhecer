@@ -218,7 +218,7 @@ test('Meta receives exact verified image bytes even when the file changes after 
   assert.equal(calls, 1);
 });
 
-test('daily generation is reserved before research across connections and a failed day is not retried', async (t) => {
+test('daily generation is reserved across connections and a failed incomplete day can be repaired', async (t) => {
   const f = await fixture(t);
   const other = await f.connect();
   let release, started, researchCalls = 0;
@@ -235,8 +235,37 @@ test('daily generation is reserved before research across connections and a fail
   release();
   await assert.rejects(first, { code: 'RESEARCH_FAILED' });
   assert.equal(other.store.getBatch(duplicate.batchId).status, 'blocked');
-  assert.equal((await createDailyBatch({ ...options, store: other.store })).skipped, 'already_created_today');
-  assert.equal(researchCalls, 1);
+  await assert.rejects(createDailyBatch({ ...options, store: other.store }), { code: 'RESEARCH_FAILED' });
+  assert.equal(researchCalls, 2);
+});
+
+test('repair preserves approved posts and regenerates only rejected or missing slots', async (t) => {
+  const f = await fixture(t);
+  f.db.prepare('UPDATE batches SET local_day=?,status=? WHERE id=?').run('2026-09-24', 'blocked', 'batch_test');
+  await f.approve('post_4');
+  f.store.rejectPost('post_3');
+  for (const id of ['post_5','post_6','post_7','post_8']) f.db.prepare('DELETE FROM posts WHERE id=?').run(id);
+  const approvedBefore = f.store.getPost('post_4');
+  const candidates = [
+    { id: 'c3', category: 'curiosity', publishable: true, topic: 'nova-curiosidade', sources: [{ url: 'https://example.test/c3' }], trend: {} },
+    ...Array.from({ length: 4 }, (_, index) => ({ id: 'n' + index, category: 'news', publishable: true, topic: 'nova-noticia-' + index, sources: [{ url: 'https://example.test/n' + index }], trend: {} })),
+  ];
+  const result = await createDailyBatch({
+    config: { ...config, outputDir: f.dir }, store: f.store, now: approvalTime, targetDay: '2026-09-24',
+    research: async () => ({ candidates, warnings: [] }),
+    ai: { generateCopy: async (candidate) => ({ headline: candidate.topic, caption: 'Legenda', highlights: [], imagePrompt: 'prompt' }), generateImage: async () => ({ buffer: f.image }) },
+    renderer: async ({ imageBuffer, outputPath }) => writeFile(outputPath, imageBuffer),
+    messenger: { send: async () => {} },
+  });
+  const batch = f.store.getBatch('batch_test');
+  assert.equal(result.repaired, true);
+  assert.equal(result.selected, 5);
+  assert.equal(batch.posts.length, 8);
+  assert.equal(batch.status, 'pending_approval');
+  assert.equal(f.store.getPost('post_4').status, 'approved');
+  assert.equal(f.store.getPost('post_4').version, approvedBefore.version);
+  assert.ok(batch.posts.find((post) => post.slot === 3).id !== 'post_3');
+  assert.ok(batch.posts.filter((post) => [3,5,6,7,8].includes(post.slot)).every((post) => post.status === 'pending_approval'));
 });
 
 test('a generated 4+4 batch needs explicit approval even when approvalRequired=false', async (t) => {
@@ -283,7 +312,7 @@ test('research progress is summarized, serialized and drained before reporting a
   assert.equal(result.blocked, 'insufficient_topics');
   assert.ok(messages.length >= 2);
   assert.equal(messages.filter((text) => text.includes('qualidade')).length, 0);
-  assert.match(messages.at(-1), /last30days|Não publiquei nada incompleto/i);
+  assert.match(messages.at(-1), /faltam algumas pautas|preservado/i);
   assert.ok(messages.every((text) => !text.includes('private')));
   assert.equal(maximum, 1);
   assert.equal(active, 0);
@@ -301,7 +330,7 @@ test('AI and research failures notify only safe codes and await the final notice
       ai: { generateCopy: async () => { throw failure; } },
       messenger: { send: async ({ text }) => { await Promise.resolve(); messages.push(text); } },
     }), (error) => error === failure);
-    assert.match(messages.at(-1), /produção foi interrompida|Nada incompleto/i);
+    assert.match(messages.at(-1), /não consegui concluir|preservado/i);
     assert.ok(messages.every((text) => !text.includes('private') && !text.includes('secret')));
     assert.equal(f.store.batchForDay('2026-09-24').status, 'blocked');
   }
