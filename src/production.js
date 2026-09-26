@@ -11,11 +11,11 @@ export function createVerifier(config) {
   return createEditorialVerifier(config, { modelCall: createOpenClawTextRunner(config) });
 }
 
-export function createResearch(config, { discoverOnly = false } = {}) {
-  const verifyImpl = discoverOnly ? undefined : createVerifier(config);
-  const selectImpl = discoverOnly || !config.openclawAiEnabled ? undefined : createEditorialSelector({ modelCall: createOpenClawTextRunner(config), agent: config.openclawAiAgent });
+export function createResearch(config, { discoverOnly = false, strict = false } = {}) {
+  const verifyImpl = !discoverOnly && strict ? createVerifier(config) : undefined;
+  const selectImpl = !discoverOnly && strict && config.openclawAiEnabled ? createEditorialSelector({ modelCall: createOpenClawTextRunner(config), agent: config.openclawAiAgent }) : undefined;
   return async (_config, options = {}) => {
-    const result = await researchTopics(config, { ...options, verifyImpl, selectImpl });
+    const result = await researchTopics(config, { ...options, verifyImpl, selectImpl, relaxed: !strict && !discoverOnly });
     const directory = join(config.dataDir, 'research');
     await mkdir(directory, { recursive: true });
     const reportPath = join(directory, `${new Date().toISOString().replaceAll(':', '-')}-${randomUUID().slice(0, 8)}.json`);

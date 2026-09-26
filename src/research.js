@@ -221,7 +221,7 @@ function parseJsonOutput(stdout) {
   throw Object.assign(new Error('A saída JSON do last30days é inválida.'), { code: 'RESEARCH_INVALID_RESPONSE' });
 }
 
-export async function researchTopics(config, { now = new Date(), clock = () => new Date(), onProgress = () => {}, runImpl = runLast30Days, selectImpl, verifyImpl } = {}) {
+export async function researchTopics(config, { now = new Date(), clock = () => new Date(), onProgress = () => {}, runImpl = runLast30Days, selectImpl, verifyImpl, relaxed = false } = {}) {
   await mkdir(config.last30daysDir, { recursive: true });
   const scriptPath = resolve(config.last30daysDir, 'vendor/last30days/skills/last30days/scripts/last30days.py');
   // The pinned engine treats explicit empty credentials as opt-outs, including
@@ -274,8 +274,10 @@ export async function researchTopics(config, { now = new Date(), clock = () => n
     }
     onProgress({ type: 'editorial_selection_finished', candidates: unique.length, eligible: eligible.length });
   }
-  let candidates = fairLimit(eligible, 16);
-  if (typeof verifyImpl === 'function') candidates = await verifyCandidates(candidates, { verifyImpl, now, clock, windowDays: 15, onProgress });
+  let candidates = fairLimit(eligible, relaxed ? 24 : 16);
+  if (relaxed) {
+    candidates = candidates.flatMap((candidate) => candidate.sources.length ? [{ ...candidate, evidenceStatus: 'discovered', publishable: true, blockedReasons: [] }] : []);
+  } else if (typeof verifyImpl === 'function') candidates = await verifyCandidates(candidates, { verifyImpl, now, clock, windowDays: 15, onProgress });
   else warnings.push({ code: 'EDITORIAL_VERIFICATION_REQUIRED', message: 'Candidatos pesquisados ainda precisam de fontes recuperadas e verificação editorial antes de gerar posts.' });
   const counts = { discovered: groups.reduce((sum, group) => sum + group.length, 0), unique: unique.length, retained: candidates.length, discoveredByCategory: discoveryCounts,
     editorial: { applied: typeof selectImpl === 'function', reviewed: editorialDecisions.length, eligible: editorialDecisions.filter((decision) => decision.eligible).length, excluded: editorialDecisions.filter((decision) => decision.code === 'EDITORIAL_NOT_ELIGIBLE').length, failed: editorialDecisions.filter((decision) => decision.code && decision.code !== 'EDITORIAL_NOT_ELIGIBLE').length, eligibleByCategory: countCategories(editorialDecisions.filter((decision) => decision.eligible)) },

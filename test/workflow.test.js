@@ -280,10 +280,10 @@ test('research progress is summarized, serialized and drained before reporting a
       active -= 1;
     } },
   });
-  assert.equal(result.blocked, 'insufficient_verified_sources');
-  assert.ok(messages.length >= 4);
-  assert.equal(messages.filter((text) => text.includes('checando')).length, 1);
-  assert.match(messages.at(-1), /Nada incompleto|não consegui reunir 8 pautas/i);
+  assert.equal(result.blocked, 'insufficient_topics');
+  assert.ok(messages.length >= 2);
+  assert.equal(messages.filter((text) => text.includes('qualidade')).length, 0);
+  assert.match(messages.at(-1), /last30days|Não publiquei nada incompleto/i);
   assert.ok(messages.every((text) => !text.includes('private')));
   assert.equal(maximum, 1);
   assert.equal(active, 0);

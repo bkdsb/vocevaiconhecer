@@ -46,7 +46,6 @@ export async function createDailyBatch({ config, store, ai, renderer = renderPos
   try { store.createBatch({ id: batchId, createdAt: now.toISOString(), localDay, status: 'generating' }); }
   catch (error) { const claimed = store.batchForDay(localDay); if (claimed) return { batchId: claimed.id, skipped: 'already_created_today' }; throw error; }
   let notices = Promise.resolve();
-  let verificationAnnounced = false;
   const notify = (text) => {
     notices = notices.then(() => messenger?.send?.({ text }))
       .catch((error) => { store.addEvent('progress_delivery_failed', { batchId, code: safeErrorCode(error, 'DELIVERY_FAILED') }); });
@@ -54,32 +53,15 @@ export async function createDailyBatch({ config, store, ai, renderer = renderPos
   };
   try {
   await notify('🔎 Estou buscando boas pautas recentes e conferindo as fontes.');
-  const researchOptions = { now, onProgress: (event) => {
-    if (event.type === 'verification_started' && !verificationAnnounced) {
-      verificationAnnounced = true;
-      notify('✅ Encontrei boas pautas. Agora estou checando datas, fontes e afirmações antes de criar as artes.');
-    }
-  } };
-  let result = await research(config, researchOptions);
-  let verified = result.candidates.filter((candidate) => candidate.publishable);
-  let curiosity = select(result.candidates, 'curiosity', 4, now.toISOString());
-  let news = select(result.candidates, 'news', 4, `${now.toISOString()}:news`);
-  if (curiosity.length !== 4 || news.length !== 4) {
-    await notify('🔄 A primeira busca não fechou as 8 pautas com qualidade. Vou ampliar a seleção e conferir uma segunda vez.');
-    const retry = await research(config, researchOptions);
-    const retryCuriosity = select(retry.candidates, 'curiosity', 4, `${now.toISOString()}:retry`);
-    const retryNews = select(retry.candidates, 'news', 4, `${now.toISOString()}:news:retry`);
-    if (Math.min(retryCuriosity.length, retryNews.length) >= Math.min(curiosity.length, news.length)) {
-      result = retry; curiosity = retryCuriosity; news = retryNews;
-      verified = result.candidates.filter((candidate) => candidate.publishable);
-    }
-  }
-  await notify(`📚 Verificação concluída: ${verified.filter((candidate) => candidate.category === 'curiosity').length} curiosidades e ${verified.filter((candidate) => candidate.category === 'news').length} notícias prontas para produção.`);
+  const result = await research(config, { now, onProgress: () => {} });
+  const curiosity = select(result.candidates, 'curiosity', 4, now.toISOString());
+  const news = select(result.candidates, 'news', 4, `${now.toISOString()}:news`);
+  if (curiosity.length === 4 && news.length === 4) await notify('✍️ Separei 8 pautas dos últimos 15 dias. Agora vou criar as imagens e legendas para sua aprovação.');
   const selected = [...curiosity, ...news];
   if (curiosity.length !== 4 || news.length !== 4) {
-    store.setBatchStatus(batchId, 'blocked', { warning: `Pesquisa incompleta: ${curiosity.length}/4 curiosidades e ${news.length}/4 notícias verificadas.` });
-    await notify(`⚠️ Hoje ainda não consegui reunir 8 pautas com fontes fortes o suficiente para o padrão da página. Encontrei ${curiosity.length} curiosidades e ${news.length} notícias aprovadas na checagem. Não gerei nem publiquei nada incompleto.`);
-    return { batchId, selected: 0, warnings: result.warnings, blocked: 'insufficient_verified_sources' };
+    store.setBatchStatus(batchId, 'blocked', { warning: `Pesquisa incompleta no last30days: ${curiosity.length}/4 curiosidades e ${news.length}/4 notícias.` });
+    await notify(`⚠️ O last30days encontrou ${curiosity.length} curiosidades e ${news.length} notícias utilizáveis nos últimos 15 dias. Não publiquei nada incompleto.`);
+    return { batchId, selected: 0, warnings: result.warnings, blocked: 'insufficient_topics' };
   }
   await mkdir(config.outputDir, { recursive: true });
   for (const [index, candidate] of selected.entries()) {
