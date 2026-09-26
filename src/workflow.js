@@ -7,7 +7,20 @@ import { researchTopics } from './research.js';
 function hash(value) { return createHash('sha256').update(value).digest('hex'); }
 function safeErrorCode(error, fallback) { return /^[A-Z][A-Z0-9_]{1,63}$/.test(error?.code || '') ? error.code : fallback; }
 function shuffled(items, seed) { return [...items].sort((a, b) => hash(`${seed}:${a.id}`).localeCompare(hash(`${seed}:${b.id}`))); }
-function select(candidates, category, count, seed) { return shuffled(candidates.filter((candidate) => candidate.category === category && candidate.publishable), seed).slice(0, count); }
+function editorialAppeal(candidate) {
+  const text = `${candidate.topic || ''} ${candidate.summary || ''}`.toLocaleLowerCase('pt-BR');
+  const hook = /(surpre|incr[ií]vel|estranh|rar[oa]|mister|descob|recorde|primeir|nunca|gigante|min[uú]scul|animal|espa[cç]o|universo|c[eé]rebro|sono|comida|oceano|planeta|rob[oô]|ia\b|intelig[eê]ncia artificial|cura|tratamento|vida|humano|por que|como)/iu.test(text) ? 4 : 0;
+  const technical = /(transcript[oô]mica|prote[oô]mica|metabol[oô]mica|filogen|taxonom|gen[oô]mica comparativa|ensaio de fase [ivx]+|mecanismo molecular|express[aã]o g[eê]nica|distribui[cç][aã]o geogr[aá]fica antiga|heterogeneidade|polimorfismo)/iu.test(text) ? -6 : 0;
+  const metrics = Object.values(candidate.trend?.aggregateMetrics || {}).flatMap((value) => typeof value === 'number' ? [value] : value && typeof value === 'object' ? Object.values(value).filter((n) => typeof n === 'number') : []);
+  const engagement = metrics.length ? Math.min(5, Math.log10(1 + Math.max(...metrics))) : 0;
+  const concise = String(candidate.topic || '').split(/\s+/u).length <= 16 ? 1 : -1;
+  return hook + technical + engagement + concise;
+}
+function select(candidates, category, count, seed) {
+  return shuffled(candidates.filter((candidate) => candidate.category === category && candidate.publishable), seed)
+    .sort((a, b) => editorialAppeal(b) - editorialAppeal(a))
+    .slice(0, count);
+}
 export function slotTimes(date = new Date(), timezone = 'America/Sao_Paulo') {
   // Slots are deterministic per local date and stay inside audience-friendly windows.
   const starts = [10 * 60, 11 * 60, 12 * 60, 13 * 60, 18 * 60, 19 * 60, 20 * 60, 21 * 60];

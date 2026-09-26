@@ -232,8 +232,16 @@ export async function researchTopics(config, { now = new Date(), clock = () => n
   const run = async (args) => { onProgress({ type: 'research_started', args }); const result = await runImpl({ pythonBin: config.pythonBin, scriptPath, args, timeoutMs: config.researchTimeoutMs, env }); onProgress({ type: 'research_finished' }); return parseJsonOutput(result.stdout); };
   const jobs = [
     { label: 'global', args: ['--discover', '--emit=json', '--json-profile=raw', '--days=15', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
-    ...['unusual animals', 'strange foods', 'space mysteries', 'unusual countries traditions'].map((topic) => ({ label: `curiosity:${topic}`, categoryHint: 'curiosity', args: [topic, '--emit=json', '--json-profile=raw', '--days=15', '--no-browser-cookies', '--save-dir', config.last30daysDir] })),
-    ...['science medicine breakthrough', 'AI technology innovation'].map((topic) => ({ label: `news:${topic}`, categoryHint: 'news', args: [topic, '--emit=json', '--json-profile=raw', '--days=15', '--no-browser-cookies', '--save-dir', config.last30daysDir] })),
+    ...[
+      'viral surprising discoveries absurd funny facts animals space human behavior',
+      'Brazil unusual stories religion controversy surprising viral debate',
+      'technology science weird funny discoveries internet viral',
+    ].map((topic) => ({ label: `curiosity:${topic}`, categoryHint: 'curiosity', args: [topic, '--emit=json', '--json-profile=raw', '--days=15', '--no-browser-cookies', '--save-dir', config.last30daysDir] })),
+    ...[
+      'AI new capability breakthrough technology surprising major impact',
+      'science medicine cure treatment breakthrough major discovery',
+      'Brazil politics religion society controversy divided opinions technology',
+    ].map((topic) => ({ label: `news:${topic}`, categoryHint: 'news', args: [topic, '--emit=json', '--json-profile=raw', '--days=15', '--no-browser-cookies', '--save-dir', config.last30daysDir] })),
   ];
   const completed = await Promise.allSettled(jobs.map(async (job) => ({ job, report: await run(job.args) })));
   const reports = [];
