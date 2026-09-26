@@ -82,6 +82,7 @@ export function loadConfig(env = process.env, cwd = process.cwd()) {
     aiFreeTierConfirmed: bool(env.AI_FREE_TIER_CONFIRMED, false),
     openclawAiEnabled: bool(env.OPENCLAW_AI_ENABLED, false),
     openclawAiModel: env.OPENCLAW_AI_MODEL || 'openai/gpt-5.6-sol',
+    openclawTextModels: list(env.OPENCLAW_TEXT_MODELS || env.OPENCLAW_AI_MODEL || 'openai/gpt-5.6-sol'),
     openclawAiAgent: env.OPENCLAW_AI_AGENT || 'vvc-editor',
     openclawResearchAgent: env.OPENCLAW_RESEARCH_AGENT || 'vvc-research',
     openclawImageModel: env.OPENCLAW_IMAGE_MODEL || 'openai/gpt-image-2',

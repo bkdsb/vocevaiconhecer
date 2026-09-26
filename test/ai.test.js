@@ -80,6 +80,36 @@ test('wrong provider, wrong model, unreported winner and any fallback fail close
   }
 });
 
+
+
+test('text runner falls back only on quota/unavailable and validates each selected provider/model', async () => {
+  const calls = [];
+  const config = { ...openclaw, openclawTextModels: ['openai/gpt-5.6-sol', 'google/gemini-3.6-flash', 'groq/openai/gpt-oss-120b'] };
+  const googleEnvelope = envelope('{"ok":true}');
+  googleEnvelope.result.meta.agentMeta = { provider: 'google', model: 'gemini-3.6-flash' };
+  let attempt = 0;
+  const execFileImpl = (_bin, args, options, callback) => {
+    calls.push({ args, options });
+    attempt += 1;
+    if (attempt === 1) return callback(Object.assign(new Error('quota'), { code: 1 }), '', '429 quota reached');
+    callback(null, JSON.stringify(googleEnvelope), '');
+  };
+  const result = await createOpenClawTextRunner(config, { execFileImpl })('classify', { label: 'fallback' });
+  assert.equal(result.model, 'google/gemini-3.6-flash');
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].args[calls[0].args.indexOf('--model') + 1], 'openai/gpt-5.6-sol');
+  assert.equal(calls[1].args[calls[1].args.indexOf('--model') + 1], 'google/gemini-3.6-flash');
+});
+
+test('text runner never falls back after an invalid or mismatched response', async () => {
+  const calls = [];
+  const config = { ...openclaw, openclawTextModels: ['openai/gpt-5.6-sol', 'google/gemini-3.6-flash'] };
+  const bad = envelope('{"ok":true}');
+  bad.result.meta.agentMeta.provider = 'google';
+  await assert.rejects(createOpenClawTextRunner(config, { execFileImpl: stubExec(bad, calls) })('classify'), { code: 'AI_MODEL_MISMATCH' });
+  assert.equal(calls.length, 1);
+});
+
 test('aborted, truncated, refused, empty and late error payloads are not successful generations', async () => {
   const mutations = [
     (response) => { response.result.meta.aborted = true; },

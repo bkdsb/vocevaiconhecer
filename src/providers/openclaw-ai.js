@@ -51,8 +51,11 @@ function validateEnvelope(envelope, model) {
   const result = envelope.result;
   const meta = result?.meta;
   const agent = meta?.agentMeta;
-  const matches = (provider, reportedModel) => provider === 'openai' && (reportedModel === model || reportedModel === model.slice('openai/'.length));
-  if (!matches(agent?.provider, agent?.model)) fail('AI_MODEL_MISMATCH', 'A geração não confirmou o provedor e o modelo Codex configurados.');
+  const slash = model.indexOf('/');
+  const expectedProvider = slash > 0 ? model.slice(0, slash) : '';
+  const expectedModel = slash > 0 ? model.slice(slash + 1) : model;
+  const matches = (provider, reportedModel) => provider === expectedProvider && (reportedModel === model || reportedModel === expectedModel);
+  if (!matches(agent?.provider, agent?.model)) fail('AI_MODEL_MISMATCH', 'A geração não confirmou o provedor e o modelo configurados.');
   const trace = meta?.executionTrace;
   if ((Array.isArray(agent.fallbackAttempts) && agent.fallbackAttempts.length) || trace?.fallbackUsed === true
     || (trace && (trace.winnerProvider || trace.winnerModel) && !matches(trace.winnerProvider, trace.winnerModel))
@@ -115,18 +118,28 @@ function execute(config, args, execFileImpl) {
 
 export function createOpenClawTextRunner(config, { execFileImpl = defaultExecFile } = {}) {
   if (!config.openclawAiEnabled) fail('AI_NOT_CONFIGURED', 'OPENCLAW_AI_ENABLED precisa ser true.');
-  const model = config.openclawAiModel || 'openai/gpt-5.6-sol';
-  if (!/^openai\/[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(model)) fail('AI_NOT_CONFIGURED', 'OPENCLAW_AI_MODEL deve selecionar um modelo da conta OpenAI.');
+  const models = Array.isArray(config.openclawTextModels) && config.openclawTextModels.length
+    ? config.openclawTextModels
+    : [config.openclawAiModel || 'openai/gpt-5.6-sol'];
+  if (models.length > 8 || models.some((model) => !/^[a-z0-9][a-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._:/-]*$/u.test(model))) {
+    fail('AI_NOT_CONFIGURED', 'OPENCLAW_TEXT_MODELS contém um modelo inválido.');
+  }
   return async function runText(message, { agent = config.openclawAiAgent || 'vvc-editor', label = 'text' } = {}) {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/u.test(agent)) fail('AI_NOT_CONFIGURED', 'O agente OpenClaw configurado é inválido.');
     if (typeof message !== 'string' || !message.trim() || message.length > 150_000) fail('AI_INVALID_INPUT', 'A solicitação de texto é inválida ou acima do limite.');
-    try {
-      const stdout = await execute(config, ['agent', '--agent', agent, '--session-key', `agent:${agent}:vvc-ai-${label}-${randomUUID()}`, '--message', message, '--model', model, '--json', '--timeout', '180'], execFileImpl);
-      return validateEnvelope(parseEnvelope(stdout), model);
-    } catch (error) {
-      if (error instanceof OpenClawAIError) throw error;
-      unavailable();
+    let lastError;
+    for (const model of models) {
+      try {
+        const stdout = await execute(config, ['agent', '--agent', agent, '--session-key', `agent:${agent}:vvc-ai-${label}-${randomUUID()}`, '--message', message, '--model', model, '--json', '--timeout', '180'], execFileImpl);
+        const result = validateEnvelope(parseEnvelope(stdout), model);
+        return { ...result, model };
+      } catch (error) {
+        if (!(error instanceof OpenClawAIError)) unavailable();
+        if (!['AI_QUOTA', 'AI_UNAVAILABLE'].includes(error.code)) throw error;
+        lastError = error;
+      }
     }
+    throw lastError || new OpenClawAIError('AI_UNAVAILABLE', 'Nenhum modelo de texto permitido está disponível.');
   };
 }
 
