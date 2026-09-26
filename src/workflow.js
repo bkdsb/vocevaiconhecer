@@ -110,7 +110,7 @@ export async function createDailyBatch({ config, store, ai, renderer = renderPos
     if (repairing) store.removeRejectedSlot(batchId, slot);
     const postId = repairing ? `${batchId}_p${slot}_${randomUUID().slice(0, 4)}` : `${batchId}_p${slot}`;
     store.insertPost({ id: postId, batchId, slot, category: candidate.category, topic: candidate.topic, version, contentHash: digest, headline: copy.headline, caption: copy.caption, imagePath: outputPath, sources: candidate.sources, trend: candidate.trend, status: 'pending_approval' });
-    try { await messenger?.send?.({ text: `🖼️ *Prévia ${slot} de 8*\n\n*${copy.headline}*\n\n${copy.caption}\n\n📌 ${candidate.category === 'curiosity' ? 'Curiosidade' : 'Notícia'}\n🔗 Fontes: ${candidate.sources.map((source) => source.url).join(' | ')}\n\nResponda *APROVAR ${slot}* ou *REJEITAR ${slot}*.`, imagePath: outputPath }); }
+    try { await messenger?.send?.({ text: `${copy.caption}\n\nResponda *APROVAR ${slot}* ou *REJEITAR ${slot}*.`, imagePath: outputPath }); }
     catch (error) { store.addEvent('preview_delivery_failed', { batchId, postId, code: safeErrorCode(error, 'DELIVERY_FAILED') }); }
   }
   if (store.getBatch(batchId).status !== 'paused') {
@@ -202,7 +202,7 @@ export async function handleApprovalCommand({ text, sender, config, store, batch
     const resolvedId = numericSlot ? latest?.posts?.find((post) => post.slot === numericSlot)?.id : id;
     const post = resolvedId ? store.rejectPost(resolvedId) : null;
     if (!post) throw Object.assign(new Error('Post não encontrado.'), { code: 'POST_NOT_FOUND' });
-    return { text: `❌ Prévia ${numericSlot || post.slot} rejeitada.` };
+    return { text: `❌ Prévia ${numericSlot || post.slot} rejeitada. Vou buscar outro tema para esse espaço e te enviar uma nova prévia para aprovação.` };
   }
   const targetBatchId = id || batchId || store.latestBatch()?.id;
   const targetBatch = targetBatchId && store.getBatch(targetBatchId);

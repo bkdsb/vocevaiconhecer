@@ -56,11 +56,19 @@ export function createStore(db) {
     },
     batchForDay(day) { return db.prepare('SELECT id,status FROM batches WHERE local_day=?').get(day); },
     dayCoverage(day) {
-      const batch = db.prepare('SELECT id,status FROM batches WHERE local_day=?').get(day);
+      const batch = db.prepare('SELECT id,status,created_at FROM batches WHERE local_day=?').get(day);
       if (!batch) return { day, batchId: null, status: 'missing', total: 0, pending: 0, approved: 0, scheduled: 0, published: 0, rejected: 0 };
       const counts = db.prepare(`SELECT status,COUNT(*) AS count FROM posts WHERE batch_id=? GROUP BY status`).all(batch.id);
       const by = Object.fromEntries(counts.map((row) => [row.status, Number(row.count)]));
-      return { day, batchId: batch.id, status: batch.status, total: Object.values(by).reduce((a,b)=>a+b,0), pending: by.pending_approval || 0, approved: by.approved || 0, scheduled: by.scheduled || 0, published: by.published || 0, rejected: by.rejected || 0 };
+      return { day, batchId: batch.id, status: batch.status, createdAt: batch.created_at, total: Object.values(by).reduce((a,b)=>a+b,0), pending: by.pending_approval || 0, approved: by.approved || 0, scheduled: by.scheduled || 0, published: by.published || 0, rejected: by.rejected || 0 };
+    },
+    recoverStaleGenerating(cutoffIso) {
+      const rows = db.prepare("SELECT id FROM batches WHERE status='generating' AND created_at<?").all(cutoffIso);
+      for (const row of rows) {
+        db.prepare("UPDATE batches SET status='blocked', warning=? WHERE id=? AND status='generating'").run('Geração anterior interrompida; pronta para reparo automático.', row.id);
+        addEvent.run(new Date().toISOString(), 'batch_stale_recovered', row.id, null, json({ cutoffIso }));
+      }
+      return rows.length;
     },
     releaseBlockedDay(day, now = new Date().toISOString()) {
       return this.transaction(() => {

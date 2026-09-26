@@ -27,11 +27,11 @@ test('Cloudflare remains explicit opt-in and rejects unapproved models', () => {
   assert.throws(() => createAIProvider({ ...cfg, imageModel: 'paid/model' }), /lista gratuita/);
 });
 
-test('both providers append exact original source URLs and a deterministic AI disclosure', async () => {
+test('both providers append only the source name and no URL to the final caption', async () => {
   const fetchImpl = async () => new Response(JSON.stringify({ success: true, result: { response: JSON.stringify(validCopy()) } }));
   for (const ai of [createAIProvider(cfg, { fetchImpl }), createAIProvider(openclaw, { execFileImpl: stubExec(envelope()) })]) {
     const copy = await ai.generateCopy(candidate);
-    assert.equal(copy.caption, 'Fato documentado.\n\nImagem ilustrativa gerada por IA.\n\nFontes:\nhttps://example.test/original?a=1&b=2');
+    assert.equal(copy.caption, 'Fato documentado.\n\nFonte: Example');
     assert.deepEqual(copy.sourceIds, ['s1']);
   }
 });

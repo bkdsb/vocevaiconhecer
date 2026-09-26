@@ -166,7 +166,7 @@ export async function renderPost({ imageBuffer, headline, highlights = [], outpu
     <defs><linearGradient id="fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#000" stop-opacity="0"/><stop offset="0.3" stop-color="#000" stop-opacity="0.37"/><stop offset="0.65" stop-color="#000" stop-opacity="0.83"/><stop offset="1" stop-color="#000" stop-opacity="0.97"/></linearGradient></defs>
     <rect x="0" y="730" width="1080" height="620" fill="url(#fade)"/>
     <circle cx="540" cy="118" r="75" fill="#000" opacity="0.18"/>
-    <circle cx="540" cy="112" r="74" fill="#F5A900"/>
+    <circle cx="540" cy="112" r="72" fill="#F5A900"/>
   </svg>`);
   const textTop = HEIGHT - BOTTOM_MARGIN - layout.height;
   const composite = [

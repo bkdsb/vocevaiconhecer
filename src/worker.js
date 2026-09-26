@@ -46,6 +46,7 @@ export async function workerTick({
     result.generation = { skipped: 'before_generation_time' };
     return result;
   }
+  store.recoverStaleGenerating?.(new Date(now.getTime() - 30 * 60_000).toISOString());
   const today = localDay(now, config.timezone);
   const horizon = Math.max(0, config.coverageDaysAhead ?? 0);
   const targetDays = Array.from({ length: horizon + 1 }, (_, index) => dayOffset(today, index));
