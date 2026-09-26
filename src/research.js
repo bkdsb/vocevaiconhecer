@@ -274,7 +274,7 @@ export async function researchTopics(config, { now = new Date(), clock = () => n
     }
     onProgress({ type: 'editorial_selection_finished', candidates: unique.length, eligible: eligible.length });
   }
-  let candidates = fairLimit(eligible, 40);
+  let candidates = fairLimit(eligible, 16);
   if (typeof verifyImpl === 'function') candidates = await verifyCandidates(candidates, { verifyImpl, now, clock, windowDays: 15, onProgress });
   else warnings.push({ code: 'EDITORIAL_VERIFICATION_REQUIRED', message: 'Candidatos pesquisados ainda precisam de fontes recuperadas e verificação editorial antes de gerar posts.' });
   const counts = { discovered: groups.reduce((sum, group) => sum + group.length, 0), unique: unique.length, retained: candidates.length, discoveredByCategory: discoveryCounts,

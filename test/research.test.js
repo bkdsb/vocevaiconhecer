@@ -176,9 +176,9 @@ test('cross-search duplicates merge evidence and preserve explicit topical categ
 test('truncation is fair across categories and searches and counts only verified items as available', async (t) => {
   const result = await research(t, { runImpl: async ({ args }) => ({ stdout: JSON.stringify({ results: Array.from({ length: 50 }, (_, index) => flat(`${args[0]} item ${index}`)) }), stderr: '' }) });
   assert.equal(result.counts.discovered, 350);
-  assert.equal(result.candidates.length, 40);
-  assert.equal(result.counts.retainedByCategory.news, 20);
-  assert.equal(result.counts.retainedByCategory.curiosity, 20);
+  assert.equal(result.candidates.length, 16);
+  assert.equal(result.counts.retainedByCategory.news, 8);
+  assert.equal(result.counts.retainedByCategory.curiosity, 8);
   for (const topic of ['unusual animals', 'strange foods', 'space mysteries', 'unusual countries traditions', 'science medicine breakthrough', 'AI technology innovation']) assert.ok(result.candidates.some((item) => item.topic.startsWith(topic)), topic);
   assert.deepEqual(result.counts.verified, { curiosity: 0, news: 0 });
   assert.ok(result.warnings.some((warning) => warning.code === 'CANDIDATES_TRUNCATED'));
