@@ -42,18 +42,19 @@ async function fixture(t) {
   return { dir, db, store, image, imagePath, connect, approve, schedule, command };
 }
 
-test('only authorized sender and reviewed version can approve; a complete 4+4 batch schedules in future slots', async (t) => {
+test('each approved post is scheduled immediately into the next free Brasilia slot', async (t) => {
   const f = await fixture(t);
   await assert.rejects(handleApprovalCommand({ text: 'APROVAR post_1 deadbeef', sender: 'other', config, store: f.store }), { code: 'UNAUTHORIZED_SENDER' });
   await assert.rejects(f.command('APROVAR post_1 deadbeef'), { code: 'STALE_VERSION' });
   for (let slot = 1; slot <= 7; slot += 1) await f.approve('post_' + slot);
-  assert.equal(f.store.getPost('post_1').status, 'approved');
-  assert.equal(scheduleBatch({ store: f.store, config, batchId: 'batch_test' }).reason, 'awaiting_approval');
+  assert.equal(f.store.getPost('post_1').status, 'scheduled');
+  assert.match(f.store.getPost('post_1').scheduled_at, /T10:00:00-03:00$/);
+  assert.equal(scheduleBatch({ store: f.store, config, batchId: 'batch_test' }).reason, 'no_approved_posts');
   assert.match((await f.approve('post_8', new Date('2026-09-24T14:00:00Z'))).text, /agendad/);
-  assert.match(f.store.getPost('post_1').scheduled_at, /T12:00:00-03:00$/);
   const times = f.store.getBatch('batch_test').posts.map((post) => post.scheduled_at);
   assert.equal(new Set(times).size, 8);
-  assert.ok(times.every((at) => new Date(at) > new Date('2026-09-24T14:00:00Z')));
+  assert.ok(times.every(Boolean));
+  assert.ok(new Date(f.store.getPost('post_8').scheduled_at) > new Date('2026-09-24T14:00:00Z'));
 });
 
 test('approval rejects an image changed since preview, but allows the restored reviewed bytes', async (t) => {
@@ -63,7 +64,8 @@ test('approval rejects an image changed since preview, but allows the restored r
   assert.equal(f.store.getPost('post_1').approved_at, null);
   await writeFile(f.imagePath, f.image);
   await f.approve('post_1');
-  assert.equal(f.store.getPost('post_1').status, 'approved');
+  assert.equal(f.store.getPost('post_1').status, 'scheduled');
+  assert.match(f.store.getPost('post_1').scheduled_at, /T10:00:00-03:00$/);
 });
 
 test('pause actually blocks publication and resume moves reserved posts to future slots', async (t) => {
@@ -261,8 +263,8 @@ test('repair preserves approved posts and regenerates only rejected or missing s
   assert.equal(result.repaired, true);
   assert.equal(result.selected, 5);
   assert.equal(batch.posts.length, 8);
-  assert.equal(batch.status, 'pending_approval');
-  assert.equal(f.store.getPost('post_4').status, 'approved');
+  assert.equal(batch.status, 'scheduled');
+  assert.equal(f.store.getPost('post_4').status, 'scheduled');
   assert.equal(f.store.getPost('post_4').version, approvedBefore.version);
   assert.ok(batch.posts.find((post) => post.slot === 3).id !== 'post_3');
   assert.ok(batch.posts.filter((post) => [3,5,6,7,8].includes(post.slot)).every((post) => post.status === 'pending_approval'));

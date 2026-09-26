@@ -142,13 +142,11 @@ export async function createDailyBatch({ config, store, ai, renderer = renderPos
 export function scheduleBatch({ store, config, batchId, now = new Date() }) {
   return store.transaction(() => {
   const batch = store.getBatch(batchId); if (!batch) throw new Error('Lote não encontrado.');
-  if (!['draft', 'pending_approval', 'scheduled'].includes(batch.status)) return { scheduled: false, reason: `batch_${batch.status}` };
-  if (batch.posts.length !== 8) return { scheduled: false, reason: 'incomplete_batch' };
-  if (batch.posts.filter((post) => post.category === 'curiosity').length !== 4) return { scheduled: false, reason: 'invalid_category_split' };
-  const previouslyScheduled = batch.approved_at || batch.status === 'scheduled'
-    || batch.posts.some((post) => ['scheduled', 'publishing', 'published', 'publication_unknown', 'publication_failed'].includes(post.status));
-  if (!previouslyScheduled && batch.posts.some((post) => post.status !== 'approved' || !post.approved_at)) return { scheduled: false, reason: 'awaiting_approval' };
-  const approved = batch.posts.filter((post) => post.status === 'approved' && post.approved_at);
+  if (batch.status === 'paused') return { scheduled: false, reason: 'batch_paused' };
+  if (!['generating', 'draft', 'pending_approval', 'scheduled', 'blocked'].includes(batch.status)) return { scheduled: false, reason: `batch_${batch.status}` };
+  const approved = batch.posts
+    .filter((post) => post.status === 'approved' && post.approved_at)
+    .sort((a, b) => a.slot - b.slot);
   if (!approved.length) return { scheduled: false, reason: 'no_approved_posts' };
   const times = plannedSlots({ store, config, count: approved.length, now, targetDay: batch.local_day });
   approved.forEach((post, index) => store.markScheduled(post.id, times[index]));
