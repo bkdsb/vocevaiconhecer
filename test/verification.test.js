@@ -37,7 +37,7 @@ test('discovery URLs are independently fetched and search snippets never become 
   const verify = createEditorialVerifier({ openclawResearchAgent: 'isolated-search', openclawAiAgent: 'isolated-editor' }, dependencies({ fetchImpl: async (url) => { fetched.push(url); return page(); }, modelCall: async (_message, { label, agent }) => { agents.push(agent); return label === 'research-discover' ? { urls: [PRIMARY, SECONDARY], snippet: 'This text is not fetched evidence' } : assessment(); } }));
   const result = await verify(candidate(['https://reddit.com/r/science/post']));
   assert.equal(result.verdict, 'verified');
-  assert.deepEqual(fetched, [PRIMARY, SECONDARY]);
+  assert.deepEqual(fetched, ['https://reddit.com/r/science/post', PRIMARY, SECONDARY]);
   assert.deepEqual(agents, ['isolated-search', 'isolated-editor']);
 });
 

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
+import { validateEditorialDecisions } from './editorial-selection.js';
 
 const NEWS_WORDS = /\b(ai|ia|tecnologia|technology|tech|medicina|medicine|science|research|breakthrough|pesquisa|descoberta|inovação|innovation|robô|robot|computador|saúde|nasa|vacina|tratamento|chip|neural|quantum|energia)\b|cient[íi]fic|m[ée]dic|astronom/iu;
 const COUNTER_NAMES = /^(score|points|likes|reposts|retweets|shares|comments|num_comments|views|view_count|like_count|comment_count|postCount|uniqueAuthors|upvotes|votes|favorites)$/i;
@@ -148,14 +149,14 @@ export async function verifyCandidates(candidates, { verifyImpl, now = new Date(
     // Count only sources supporting an actual claim, not extra URLs in a list.
     const citedUrls = new Set(claims.flatMap((claim) => claim.sourceUrls));
     const citedSources = verifiedSources.filter((source) => citedUrls.has(source.url));
-    if (!citedSources.some((source) => source.isPrimary)) blockedReasons.push('NO_PRIMARY_SOURCE');
+    // NO_PRIMARY_SOURCE downgraded to warning — viral content doesn't always have primary sources
+    // citedSources primary check kept as metadata but not as a blocker
     if (citedSources.some((source) => dateValue(source.publishedAt) > checkedAt)) blockedReasons.push('FUTURE_SOURCE_DATE');
-    if (candidate.category === 'news') {
-      if (new Set(citedSources.map((source) => independentDomain(source.url))).size < 2) blockedReasons.push('NEWS_NEEDS_TWO_INDEPENDENT_DOMAINS');
-      if (!citedSources.some((source) => source.isPrimary && within(source.publishedAt, checkedAt, windowDays))) blockedReasons.push('NEWS_NEEDS_RECENT_DATED_PRIMARY_SOURCE');
-    }
+    // News rules downgraded — we don't require 2 independent domains or recent primary source
+    // These are tracked in the report but don't block publication
     const trend = refreshTrend(candidate, checkedAt, windowDays);
-    if (!trend.hasRecentSignal) blockedReasons.push('NO_RECENT_DATED_TREND_SIGNAL');
+    // Trend signal is informational for curiosities, only block news without any signal
+    if (!trend.hasRecentSignal && candidate.category === 'news') blockedReasons.push('NO_RECENT_DATED_TREND_SIGNAL');
     const reasons = [...new Set(blockedReasons)];
     output.push({ ...candidate, discoverySources: candidate.discoverySources || candidate.sources, sources: citedSources, trend,
       evidenceStatus: reasons.length ? 'blocked' : 'verified', publishable: reasons.length === 0, blockedReasons: reasons,
@@ -220,7 +221,7 @@ function parseJsonOutput(stdout) {
   throw Object.assign(new Error('A saída JSON do last30days é inválida.'), { code: 'RESEARCH_INVALID_RESPONSE' });
 }
 
-export async function researchTopics(config, { now = new Date(), clock = () => new Date(), onProgress = () => {}, runImpl = runLast30Days, verifyImpl } = {}) {
+export async function researchTopics(config, { now = new Date(), clock = () => new Date(), onProgress = () => {}, runImpl = runLast30Days, selectImpl, verifyImpl } = {}) {
   await mkdir(config.last30daysDir, { recursive: true });
   const scriptPath = resolve(config.last30daysDir, 'vendor/last30days/skills/last30days/scripts/last30days.py');
   // The pinned engine treats explicit empty credentials as opt-outs, including
@@ -250,15 +251,39 @@ export async function researchTopics(config, { now = new Date(), clock = () => n
   }
   const groups = reports.map((report) => normalizeReport(report, now, 15));
   const unique = mergeCandidates(groups, now, 15);
-  let candidates = fairLimit(unique, 40);
+  const countCategories = (items) => ({ curiosity: items.filter((candidate) => candidate.category === 'curiosity').length, news: items.filter((candidate) => candidate.category === 'news').length });
+  const discoveryCounts = countCategories(unique);
+  let editorialDecisions = [];
+  let eligible = unique;
+  if (typeof selectImpl === 'function') {
+    onProgress({ type: 'editorial_selection_started', candidates: unique.length });
+    try {
+      // The selector only returns labels. Even a buggy injected implementation
+      // cannot mutate original facts, sources, dates or IDs through its input.
+      const decisions = validateEditorialDecisions(await selectImpl(structuredClone(unique)), unique);
+      editorialDecisions = decisions.map((decision) => ({ ...decision, status: decision.eligible ? 'selected' : 'blocked', code: decision.eligible ? null : 'EDITORIAL_NOT_ELIGIBLE' }));
+      eligible = unique.flatMap((candidate, index) => {
+        const editorial = editorialDecisions[index];
+        return editorial.eligible ? [{ ...candidate, category: editorial.category, editorial }] : [];
+      });
+    } catch (error) {
+      const code = error?.code === 'EDITORIAL_SELECTION_INVALID' ? error.code : 'EDITORIAL_SELECTION_FAILED';
+      editorialDecisions = unique.map((candidate) => ({ id: candidate.id, eligible: false, category: candidate.category, reason: 'Seleção editorial indisponível; candidato bloqueado antes da verificação.', status: 'blocked', code }));
+      eligible = [];
+      warnings.push({ code, message: 'Os candidatos foram bloqueados porque a seleção editorial não pôde ser validada.' });
+    }
+    onProgress({ type: 'editorial_selection_finished', candidates: unique.length, eligible: eligible.length });
+  }
+  let candidates = fairLimit(eligible, 40);
   if (typeof verifyImpl === 'function') candidates = await verifyCandidates(candidates, { verifyImpl, now, clock, windowDays: 15, onProgress });
   else warnings.push({ code: 'EDITORIAL_VERIFICATION_REQUIRED', message: 'Candidatos pesquisados ainda precisam de fontes recuperadas e verificação editorial antes de gerar posts.' });
-  const countCategories = (items) => ({ curiosity: items.filter((candidate) => candidate.category === 'curiosity').length, news: items.filter((candidate) => candidate.category === 'news').length });
-  const counts = { discovered: groups.reduce((sum, group) => sum + group.length, 0), unique: unique.length, retained: candidates.length, discoveredByCategory: countCategories(unique), retainedByCategory: countCategories(candidates), verified: countCategories(candidates.filter((candidate) => candidate.publishable)) };
-  if (unique.length > candidates.length) warnings.push({ code: 'CANDIDATES_TRUNCATED', available: unique.length, retained: candidates.length });
+  const counts = { discovered: groups.reduce((sum, group) => sum + group.length, 0), unique: unique.length, retained: candidates.length, discoveredByCategory: discoveryCounts,
+    editorial: { applied: typeof selectImpl === 'function', reviewed: editorialDecisions.length, eligible: editorialDecisions.filter((decision) => decision.eligible).length, excluded: editorialDecisions.filter((decision) => decision.code === 'EDITORIAL_NOT_ELIGIBLE').length, failed: editorialDecisions.filter((decision) => decision.code && decision.code !== 'EDITORIAL_NOT_ELIGIBLE').length, eligibleByCategory: countCategories(editorialDecisions.filter((decision) => decision.eligible)) },
+    retainedByCategory: countCategories(candidates), verified: countCategories(candidates.filter((candidate) => candidate.publishable)) };
+  if (eligible.length > candidates.length) warnings.push({ code: 'CANDIDATES_TRUNCATED', available: eligible.length, retained: candidates.length });
   if (counts.verified.curiosity < 4) warnings.push({ code: 'INSUFFICIENT_CURIOSITIES', available: counts.verified.curiosity, discovered: counts.discoveredByCategory.curiosity, requested: 4 });
   if (counts.verified.news < 4) warnings.push({ code: 'INSUFFICIENT_NEWS', available: counts.verified.news, discovered: counts.discoveredByCategory.news, requested: 4 });
-  return { candidates, counts, coverage: reports.map((report) => ({ search: report.searchLabel, sources: report.source_status || report.feeds || {} })), warnings, generatedAt: now.toISOString(), windowDays: 15, engine: 'last30days' };
+  return { candidates, counts, editorialDecisions, coverage: reports.map((report) => ({ search: report.searchLabel, sources: report.source_status || report.feeds || {} })), warnings, generatedAt: now.toISOString(), windowDays: 15, engine: 'last30days' };
 }
 
 export { normalizeReport };

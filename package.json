@@ -12,10 +12,13 @@
     "batch": "node --env-file-if-exists=.env src/cli.js batch",
     "research": "node --env-file-if-exists=.env src/cli.js research",
     "preview": "node --env-file-if-exists=.env src/cli.js preview",
+    "meta:auth": "node --env-file-if-exists=.env scripts/meta-auth.mjs",
     "status": "node --env-file-if-exists=.env src/cli.js status",
     "worker": "node --env-file-if-exists=.env src/cli.js worker",
     "test": "node --test test/*.test.js",
-    "setup:research": "node scripts/setup-last30days.mjs"
+    "setup:research": "node scripts/setup-last30days.mjs",
+    "server:check": "node --env-file-if-exists=.env scripts/check-server.mjs",
+    "server:deploy": "node --env-file-if-exists=.env scripts/deploy-server.mjs"
   },
   "dependencies": {
     "fast-xml-parser": "5.11.1",

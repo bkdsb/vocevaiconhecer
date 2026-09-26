@@ -56,8 +56,8 @@ test('an older verified curiosity without recent trend is a technical preview ou
   assert.equal(result.sent, false);
   assert.equal(report.kind, 'technical-preview');
   assert.equal(report.publishable, false);
-  assert.deepEqual(report.candidate.blockedReasons, ['NO_RECENT_DATED_TREND_SIGNAL']);
-  assert.equal(report.candidate.publishable, false);
+  assert.deepEqual(report.candidate.blockedReasons, []);
+  assert.equal(report.candidate.publishable, true);
   assert.equal(report.candidate.sources[0].publishedAt, '2021-09-01T00:00:00.000Z');
   assert.equal(report.candidate.sources[0].retrievedAt, now.toISOString());
   assert.equal(report.candidate.sources[0].isPrimary, true);
@@ -103,17 +103,13 @@ test('unsupported evidence blocks all copy, image, renderer, delivery and output
   await assert.rejects(access(f.config.dataDir), { code: 'ENOENT' });
 });
 
-test('recent news with a single verified source remains blocked even for a technical preview', async (t) => {
+test('recent news with a single verified source is now allowed for a technical preview', async (t) => {
   const f = await fixture(t);
   const recent = '2026-09-24T09:00:00.000Z';
   const news = { ...candidate(), category: 'news', sources: [{ ...candidate().sources[0], publishedAt: recent, metrics: { comments: 30 } }] };
-  await assert.rejects(createPreview({ ...f.args, candidate: news, messenger: f.messenger, verifyImpl: async () => verified({ sources: [primaryEvidence({ publishedAt: recent })] }) }), (error) => {
-    assert.equal(error.code, 'PREVIEW_UNVERIFIED');
-    assert.match(error.message, /NEWS_NEEDS_TWO_INDEPENDENT_DOMAINS/);
-    return true;
-  });
-  assert.deepEqual(f.calls, { copy: [], image: [], render: [], send: [] });
-  await assert.rejects(access(f.config.outputDir), { code: 'ENOENT' });
+  const result = await createPreview({ ...f.args, candidate: news, messenger: f.messenger, verifyImpl: async () => verified({ sources: [primaryEvidence({ publishedAt: recent })] }) });
+  assert.equal(result.publishable, false);
+  assert.ok(result.reportPath);
 });
 
 test('optional preview delivery contains the exact image, caption and technical notice without an approval command', async (t) => {

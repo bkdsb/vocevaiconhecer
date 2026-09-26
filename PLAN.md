@@ -48,15 +48,32 @@ Os checks abaixo registram implementação, não integração ponta a ponta. A r
 
 Imagem real confirmada em 25/09 pelo comando nativo: `openai/gpt-image-2`, autenticação OAuth, transporte Codex Responses, sem tentativas alternativas. Falta concluir a prévia composta e a entrega real pelo WhatsApp.
 
-Validação local atual: 78 testes passaram, cobrindo fontes, datas, geração, prévias, aprovação, concorrência, pausa, integridade e respostas ambíguas. Publicação e geração automática continuam desativadas durante os testes de integração.
+Validação local atual: 104 testes passaram, cobrindo fontes, datas, geração, prévias, aprovação, concorrência, pausa, integridade e respostas ambíguas. Publicação e geração automática continuam desativadas durante os testes de integração.
 
 Pendências: conexão OAuth operacional da Meta (os métodos do provider existem, mas ainda falta fluxo executável), rotação do segredo exposto, autorização da Página e lote 4+4 real validado. Nunca copiar tokens para o Git.
+
+### Sessão 25/09 noite — ativação do servidor e monitoramento
+
+Servidor `ubuntu@161.153.125.141` acessado via SSH (chave em `Desktop/OpenClaw/ssh-key-2026-08-20.key`).
+
+Diagnóstico encontrou: Gateway OpenClaw ativo (v2026.7.1-2), plugin `vvc-auto-post` carregado, agentes `vvc-editor`/`vvc-research` registrados com tokens Codex disponíveis (~354k e ~335k), WhatsApp pareado e conectado (`+554599012806`, `healthState: healthy`), mas worker VVC não estava rodando e `.env` incompleto.
+
+Ações realizadas:
+- `.env` do servidor completado com `OPENCLAW_AI_ENABLED=true`, modelo, agentes e mídia.
+- `npm run doctor` confirmou: `openclawAiConfigured: true`, `openclawConfigured: true`.
+- Worker VVC instalado como serviço systemd (`vocevaiconhecer.service`), habilitado e rodando (pid 598768, bridge na porta 8790).
+- Banco `vvc.sqlite` confirmado existente em `data/`.
+- Módulo `src/server-monitor.js` criado para verificação remota via SSH.
+- Scripts `scripts/check-server.mjs` e `scripts/deploy-server.mjs` para monitoramento e deploy.
+- `scripts/install-service.sh` para instalar o serviço systemd no servidor.
+- `package.json` com scripts `server:check` e `server:deploy`.
+- `.env.example` com variáveis SSH do servidor.
 
 - [x] Plano registrado antes da implementação.
 - [x] Inventário e contratos — app Meta, host OpenClaw e chave SSH foram localizados; segredos continuam fora do Git.
 - [x] Base executável — Node 24, SQLite, CLI, estados, idempotência por lote e worker diário implementados.
 - [x] Pesquisa e IA — contrato `last30days` fixado por SHA, janela de 15 dias, descoberta separada de verificação; texto e imagem reais confirmados via OpenClaw/Codex. Lote real 4+4 ainda pendente.
 - [x] Arte e revisão — composição 1080×1350, logo, gradiente, tipografia e validações de headline implementados.
-- [x] WhatsApp/OpenClaw — provider de envio, bridge local, comandos versionados e plugin `inbound_claim` implementados e instalados. Entrega de prévia e resposta real de aprovação ainda pendentes.
+- [x] WhatsApp/OpenClaw — provider de envio, bridge local, comandos versionados e plugin `inbound_claim` implementados e instalados. WhatsApp confirmado conectado. Worker rodando como serviço systemd. Entrega de prévia e resposta real de aprovação ainda pendentes.
 - [ ] Meta — adaptador Graph/OAuth implementado, mas OAuth da Página, token e revisão do app ainda exigem ação no painel Meta.
-- [ ] Conclusão da integração — alterações atuais com 78 testes locais; implantar, validar prévia/WhatsApp e registrar os resultados reais. Worker foi pausado durante os testes; retomar com geração/publicação desativadas.
+- [ ] Conclusão da integração — 104 testes locais passando; worker implantado e rodando com geração/publicação desativadas. Falta validar prévia/WhatsApp real, gerar lote 4+4 de teste e completar o fluxo Meta.

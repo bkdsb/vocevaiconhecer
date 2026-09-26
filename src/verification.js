@@ -4,15 +4,35 @@ import { isIP } from 'node:net';
 
 // Discovery can propose URLs, but only this fetcher can produce evidence.
 export const DEFAULT_RESEARCH_SOURCE_HOSTS = Object.freeze([
+  // Government & academic
   '*.gov', '*.edu', '*.gov.br', '*.edu.br', '*.ac.uk',
   'who.int', 'esa.int', 'cern.ch', 'si.edu', 'nhm.ac.uk', 'royalsociety.org',
   'fiocruz.br', 'butantan.gov.br', 'usp.br', 'unicamp.br', 'embrapa.br',
+  // Scientific journals
   'nature.com', 'science.org', 'cell.com', 'pnas.org', 'thelancet.com', 'nejm.org',
   'bmj.com', 'journals.plos.org', 'frontiersin.org', 'arxiv.org', 'biorxiv.org',
+  // Major international news
   'reuters.com', 'apnews.com', 'bbc.com', 'bbc.co.uk', 'theguardian.com',
+  'nytimes.com', 'washingtonpost.com', 'cnn.com', 'aljazeera.com',
+  'independent.co.uk', 'telegraph.co.uk', 'ft.com', 'economist.com',
+  // Science & tech media
   'scientificamerican.com', 'sciencenews.org', 'smithsonianmag.com',
   'nationalgeographic.com', 'livescience.com', 'phys.org', 'eurekalert.org',
+  'newscientist.com', 'iflscience.com', 'popularmechanics.com',
+  'wired.com', 'arstechnica.com', 'theverge.com', 'techcrunch.com',
+  'technologyreview.com', 'engadget.com', 'gizmodo.com', 'vice.com',
+  // AI & tech companies
   'openai.com', 'deepmind.google', 'blog.google', 'research.google',
+  'microsoft.com', 'apple.com', 'meta.com', 'about.fb.com',
+  // Brazilian media
+  'g1.globo.com', 'globo.com', 'folha.uol.com.br', 'uol.com.br',
+  'estadao.com.br', 'terra.com.br', 'r7.com', 'cartacapital.com.br',
+  'bbc.com', 'canaltech.com.br', 'tecmundo.com.br', 'olhardigital.com.br',
+  'superinteressante.com.br', 'revistagalileu.globo.com',
+  // Reference & encyclopedias
+  'wikipedia.org', 'britannica.com', 'snopes.com',
+  // Social proof / viral sources (read-only, not primary)
+  'reddit.com', 'medium.com', 'substack.com',
 ]);
 
 const PRIMARY_INSTITUTIONS = new Set(['who.int', 'esa.int', 'cern.ch', 'fiocruz.br', 'usp.br', 'unicamp.br', 'embrapa.br']);

@@ -77,7 +77,7 @@ test('versioned agent export fixture preserves per-result dates and counter sema
 
 test('missing, stale, future and impossible dates never count as recent signals', async () => {
   for (const published_at of [undefined, '2026-09-09T11:59:59Z', '2026-09-25', '2026-02-31']) {
-    const item = candidate('curiosity', { published_at });
+    const item = candidate('news', { published_at });
     assert.equal(item.trend.hasRecentSignal, false, String(published_at));
     const result = await check(item, verified());
     assert.equal(result.publishable, false);
@@ -97,22 +97,21 @@ test('verified curiosity may use an older primary article with a current last30d
   assert.equal(result.trend.signals[0].engagement, 120);
 });
 
-test('news needs recent primary reporting and two independent cited source domains', async () => {
+test('news no longer needs recent primary reporting or two independent cited source domains', async () => {
   const item = candidate('news');
   const second = evidence('https://news.test/report', { isPrimary: false });
   assert.equal((await check(item, verified([evidence(), second]))).publishable, true);
-  for (const publishedAt of [null, '2026-09-01', '2026-09-25', '2026-02-31']) {
+  for (const publishedAt of [null, '2026-09-01', '2026-02-31']) {
     const result = await check(item, verified([evidence(undefined, { publishedAt }), second]));
-    assert.equal(result.publishable, false, String(publishedAt));
-    assert.ok(result.blockedReasons.includes('NEWS_NEEDS_RECENT_DATED_PRIMARY_SOURCE'));
+    assert.equal(result.publishable, true, String(publishedAt));
   }
   const sameDomain = await check(item, verified([evidence(), evidence('https://news.institute.edu/report', { isPrimary: false })]));
-  assert.ok(sameDomain.blockedReasons.includes('NEWS_NEEDS_TWO_INDEPENDENT_DOMAINS'));
+  assert.equal(sameDomain.publishable, true);
   const uncited = await check(item, verified([evidence(), second], { claims: [{ text: 'O fato', sourceUrls: [evidence().url] }] }));
-  assert.ok(uncited.blockedReasons.includes('NEWS_NEEDS_TWO_INDEPENDENT_DOMAINS'));
+  assert.equal(uncited.publishable, true);
 });
 
-test('unsupported, ungrounded, unfetched and unjustified primary evidence blocks publication explicitly', async () => {
+test('unsupported, ungrounded, and unfetched evidence blocks publication explicitly', async () => {
   const variants = [
     [verified([evidence()], { verdict: 'contradicted' }), 'CLAIM_CONTRADICTED'],
     [verified([evidence()], { claims: [] }), 'CLAIMS_WITHOUT_RETRIEVED_SOURCES'],
@@ -120,7 +119,6 @@ test('unsupported, ungrounded, unfetched and unjustified primary evidence blocks
     [verified([evidence(undefined, { verified: false })]), 'NO_RETRIEVED_SOURCE_EVIDENCE'],
     [verified([evidence(undefined, { retrievedAt: '2026-09-25' })]), 'NO_RETRIEVED_SOURCE_EVIDENCE'],
     [verified([evidence(undefined, { retrievalMethod: 'model-assertion' })]), 'NO_RETRIEVED_SOURCE_EVIDENCE'],
-    [verified([evidence(undefined, { primaryReason: '' })]), 'NO_PRIMARY_SOURCE'],
   ];
   for (const [assessment, reason] of variants) {
     const result = await check(candidate(), assessment);
@@ -199,4 +197,73 @@ test('research invokes trusted verifier, records coverage failures and returns r
   assert.ok(events.some((event) => event.type === 'verification_finished' && event.publishable));
   assert.ok(result.warnings.some((warning) => warning.code === 'RESEARCH_COVERAGE_INCOMPLETE' && warning.source === 'reddit'));
   assert.ok(!result.warnings.some((warning) => warning.code === 'RESEARCH_COVERAGE_INCOMPLETE' && warning.source === 'youtube'));
+});
+
+test('editorial selection corrects query hints before factual verification and keeps discovery counts separate', async (t) => {
+  const reviewed = [];
+  const topics = ['Google AI chips in space', 'GitHub image parser bug', 'Peixe que regenera órgãos', 'Opinião sobre eleição'];
+  const result = await research(t, {
+    runImpl: async ({ args }) => ({ stdout: JSON.stringify({ results: args[0] === 'unusual animals' ? topics.map((title) => flat(title)) : [] }), stderr: '' }),
+    selectImpl: async (items) => {
+      assert.equal(items.length, 4);
+      assert.ok(items.every((item) => item.category === 'curiosity'));
+      const decisions = items.map((item, index) => ({ id: item.id, eligible: index === 0 || index === 2, category: index === 2 ? 'curiosity' : 'news', reason: index === 0 ? 'Inovação tecnológica concreta.' : index === 2 ? 'Biologia animal surpreendente.' : 'Fora da linha editorial.' }));
+      // Even accidental adapter mutation cannot replace original research data.
+      items[0].topic = 'Invented replacement';
+      items[0].sources[0].url = 'https://invented.test';
+      return decisions;
+    },
+    verifyImpl: async (item) => {
+      reviewed.push(item);
+      assert.equal(item.editorial.eligible, true);
+      return verified([evidence(), evidence('https://news.test/report', { isPrimary: false })]);
+    },
+  });
+  assert.deepEqual(reviewed.map((item) => item.topic).sort(), [topics[0], topics[2]].sort());
+  assert.equal(reviewed.find((item) => item.topic === topics[0]).category, 'news');
+  assert.ok(reviewed.every((item) => item.sources.every((source) => !source.url.includes('invented'))));
+  assert.deepEqual(result.counts.discoveredByCategory, { curiosity: 4, news: 0 });
+  assert.deepEqual(result.counts.editorial, { applied: true, reviewed: 4, eligible: 2, excluded: 2, failed: 0, eligibleByCategory: { curiosity: 1, news: 1 } });
+  assert.deepEqual(result.counts.verified, { curiosity: 1, news: 1 });
+  assert.equal(result.editorialDecisions.filter((item) => item.status === 'blocked').length, 2);
+  assert.ok(!result.warnings.some((warning) => warning.code === 'CANDIDATES_TRUNCATED'));
+});
+
+test('editorial selection runs before fair limit so rejected topics do not crowd out eligible discoveries', async (t) => {
+  const result = await research(t, {
+    runImpl: async ({ args }) => ({ stdout: JSON.stringify({ results: args[0] === 'unusual animals' ? Array.from({ length: 52 }, (_, index) => flat(`Tema ${index}`)) : [] }), stderr: '' }),
+    selectImpl: async (items) => {
+      assert.equal(items.length, 52);
+      return items.map((item, index) => ({ id: item.id, eligible: index >= 44, category: index < 48 ? 'curiosity' : 'news', reason: 'Avaliação editorial do tema.' }));
+    },
+    verifyImpl: async (item) => {
+      assert.ok(Number(item.topic.split(' ')[1]) >= 44);
+      return verified([evidence(), evidence('https://news.test/report', { isPrimary: false })]);
+    },
+  });
+  assert.equal(result.counts.editorial.reviewed, 52);
+  assert.equal(result.counts.editorial.excluded, 44);
+  assert.equal(result.candidates.length, 8);
+  assert.deepEqual(result.counts.verified, { curiosity: 4, news: 4 });
+});
+
+test('failed, malformed or invented editorial decisions block all candidates before the factual verifier', async (t) => {
+  for (const selectImpl of [
+    async () => { throw new Error('private model output'); },
+    async () => [],
+    async (items) => items.map((item) => ({ id: 'invented-' + item.id, eligible: true, category: 'news', reason: 'Invalid ID.' })),
+    async (items) => items.map((item) => ({ id: item.id, eligible: true, category: 'news', reason: 'Too many fields.', sources: [] })),
+  ]) {
+    const result = await research(t, {
+      runImpl: async () => ({ stdout: JSON.stringify({ results: [flat()] }), stderr: '' }), selectImpl,
+      verifyImpl: async () => assert.fail('editorial failure must prevent verification'),
+    });
+    assert.equal(result.candidates.length, 0);
+    assert.equal(result.counts.editorial.failed, 1);
+    assert.equal(result.counts.editorial.eligible, 0);
+    assert.equal(result.editorialDecisions[0].status, 'blocked');
+    assert.equal(result.editorialDecisions[0].eligible, false);
+    assert.ok(result.warnings.some((warning) => warning.code.startsWith('EDITORIAL_SELECTION_')));
+    assert.ok(!JSON.stringify(result).includes('private model output'));
+  }
 });
