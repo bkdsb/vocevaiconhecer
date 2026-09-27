@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { createMetaProvider } from './providers/meta.js';
 
 const TTL_MS = 10 * 60_000;
-const REQUIRED_SCOPES = ['pages_show_list', 'pages_read_engagement', 'pages_manage_posts'];
+const REQUIRED_SCOPES = ['pages_show_list', 'pages_read_engagement', 'pages_manage_posts', 'read_insights'];
 const MAX_FILE_BYTES = 1024 * 1024;
 const MESSAGES = {
   META_AUTH_CONFIG: 'Configure App ID, App Secret redefinido e callback OAuth válido no ambiente privado.',

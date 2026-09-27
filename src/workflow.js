@@ -34,7 +34,7 @@ export function repeatsRememberedTopic(candidate, memories) {
   const candidateUrls = new Set((candidate.sources || []).map((source) => canonicalUrl(source.url)).filter(Boolean));
   return memories.some((memory) => {
     const rememberedThemes = themeTags(`${memory.topic || ''} ${memory.headline || ''}`);
-    if ([...candidateThemes].some((theme) => rememberedThemes.has(theme))) return true;
+    if ([...candidateThemes].some((theme) => theme !== 'artificial-intelligence' && rememberedThemes.has(theme))) return true;
     const rememberedUrls = new Set((memory.sources || []).map((source) => canonicalUrl(source.url)).filter(Boolean));
     if ([...candidateUrls].some((url) => rememberedUrls.has(url))) return true;
     const topicScore = overlap(normalizedWords(memory.topic), normalizedWords(candidate.topic));
@@ -49,14 +49,27 @@ export function freshEnoughForPublication(candidate, now = new Date()) {
 }
 function safeErrorCode(error, fallback) { return /^[A-Z][A-Z0-9_]{1,63}$/.test(error?.code || '') ? error.code : fallback; }
 function shuffled(items, seed) { return [...items].sort((a, b) => hash(`${seed}:${a.id}`).localeCompare(hash(`${seed}:${b.id}`))); }
-function editorialAppeal(candidate) {
+function performanceAffinity(candidate, profiles = []) {
+  if (!profiles.length) return 0;
+  const candidateWords = normalizedWords(`${candidate.topic || ''} ${candidate.summary || ''}`);
+  const topScore = Math.max(1, Number(profiles[0]?.score || 1));
+  let best = 0;
+  for (const profile of profiles) {
+    const similarity = overlap(candidateWords, normalizedWords(`${profile.topic || ''} ${profile.headline || ''}`));
+    const categoryBonus = candidate.category === profile.category ? 0.8 : 0;
+    const performanceWeight = Math.min(1.5, 1.5 * Number(profile.score || 0) / topScore);
+    best = Math.max(best, similarity * 4 + categoryBonus + performanceWeight);
+  }
+  return Math.min(4, best);
+}
+function editorialAppeal(candidate, profiles = []) {
   const text = `${candidate.topic || ''} ${candidate.summary || ''}`.toLocaleLowerCase('pt-BR');
   const hook = /(surpre|incr[ií]vel|estranh|bizar|absurd|imposs[ií]vel|parece mentira|rar[oa]|mister|sobrenatural|in[eé]dit|descob|recorde|campe[aã]o|primeir|nunca|gigante|min[uú]scul|superpoder|feito extraordin[aá]rio|animal|espa[cç]o|universo|c[eé]rebro|sono|oceano|planeta|rob[oô]|ia\b|intelig[eê]ncia artificial|cura|tratamento|avan[cç]o|vida|humano|viral|pol[eê]mic|divide opini|por que|como)/iu.test(text) ? 5 : 0;
   const technical = /(transcript[oô]mica|prote[oô]mica|metabol[oô]mica|filogen|taxonom|gen[oô]mica comparativa|ensaio de fase [ivx]+|mecanismo molecular|express[aã]o g[eê]nica|distribui[cç][aã]o geogr[aá]fica antiga|heterogeneidade|polimorfismo)/iu.test(text) ? -6 : 0;
   const metrics = Object.values(candidate.trend?.aggregateMetrics || {}).flatMap((value) => typeof value === 'number' ? [value] : value && typeof value === 'object' ? Object.values(value).filter((n) => typeof n === 'number') : []);
   const engagement = metrics.length ? Math.min(5, Math.log10(1 + Math.max(...metrics))) : 0;
   const concise = String(candidate.topic || '').split(/\s+/u).length <= 16 ? 1 : -1;
-  return hook + technical + engagement + concise;
+  return hook + technical + engagement + concise + performanceAffinity(candidate, profiles);
 }
 function requiresOneDayFreshness(candidate) {
   const text = `${candidate.topic || ''} ${candidate.summary || ''} ${candidate.headline || ''}`.toLocaleLowerCase('pt-BR');
@@ -68,9 +81,9 @@ function withinOneDay(candidate, now = new Date()) {
   const newest = Math.max(...dates.map((date) => date.getTime()));
   return newest <= now.getTime() + 5 * 60_000 && newest >= now.getTime() - 24 * 60 * 60_000;
 }
-function select(candidates, category, count, seed, now = new Date()) {
+function select(candidates, category, count, seed, now = new Date(), profiles = []) {
   return shuffled(candidates.filter((candidate) => candidate.category === category && candidate.publishable && (!requiresOneDayFreshness(candidate) || withinOneDay(candidate, now))), seed)
-    .sort((a, b) => editorialAppeal(b) - editorialAppeal(a))
+    .sort((a, b) => editorialAppeal(b, profiles) - editorialAppeal(a, profiles))
     .slice(0, count);
 }
 export function slotTimes(date = new Date(), timezone = 'America/Sao_Paulo') {
@@ -148,11 +161,12 @@ export async function createDailyBatch({ config, store, ai, renderer = renderPos
   const occupied = new Set(before.posts.filter((post) => post.status !== 'rejected').map((post) => post.slot));
   const missingSlots = Array.from({ length: 8 }, (_, index) => index + 1).filter((slot) => !occupied.has(slot));
   const memories = store.topicMemory();
+  const performanceProfiles = store.performanceProfiles?.(20) || [];
   const available = result.candidates.filter((candidate) => freshEnoughForPublication(candidate, now) && !repeatsRememberedTopic(candidate, memories));
   const curiosityNeeded = missingSlots.filter((slot) => slot <= 4).length;
   const newsNeeded = missingSlots.filter((slot) => slot > 4).length;
-  const curiosity = select(available, 'curiosity', curiosityNeeded, `${now.toISOString()}:curiosity:${localDay}`, now);
-  const news = select(available, 'news', newsNeeded, `${now.toISOString()}:news:${localDay}`, now);
+  const curiosity = select(available, 'curiosity', curiosityNeeded, `${now.toISOString()}:curiosity:${localDay}`, now, performanceProfiles);
+  const news = select(available, 'news', newsNeeded, `${now.toISOString()}:news:${localDay}`, now, performanceProfiles);
   if (curiosity.length !== curiosityNeeded || news.length !== newsNeeded) {
     const warning = `Pesquisa incompleta no last30days: faltam ${curiosityNeeded - curiosity.length} curiosidades e ${newsNeeded - news.length} notícias para completar o dia.`;
     store.setBatchStatus(batchId, originalStatus === 'scheduled' ? 'scheduled' : 'blocked', { warning });

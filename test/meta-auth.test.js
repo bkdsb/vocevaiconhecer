@@ -10,7 +10,7 @@ import { runMetaAuthCli } from '../scripts/meta-auth.mjs';
 const APP = '1051796081025755'; const PAGE = '123456';
 const SECRET = 'test-app-secret-only'; const PAGE_TOKEN = 'test-page-token-only';
 const clock = '2026-09-25T12:00:00.000Z';
-const permissions = ['pages_show_list', 'pages_read_engagement', 'pages_manage_posts'];
+const permissions = ['pages_show_list', 'pages_read_engagement', 'pages_manage_posts', 'read_insights'];
 const pages = () => [{ id: PAGE, name: 'Você Vai Conhecer', accessToken: PAGE_TOKEN, tasks: ['CREATE_CONTENT'] }, { id: '234567', name: 'Outra Página', accessToken: 'second-private-page-token', tasks: ['ANALYZE'] }];
 
 async function fixture(t, changes = {}) {

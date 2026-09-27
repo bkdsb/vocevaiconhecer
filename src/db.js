@@ -31,6 +31,13 @@ export async function openDatabase(dataDir) {
       topic TEXT NOT NULL, headline TEXT NOT NULL, sources_json TEXT NOT NULL,
       remembered_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS post_performance (
+      post_id TEXT PRIMARY KEY, media_views INTEGER NOT NULL DEFAULT 0,
+      unique_views INTEGER NOT NULL DEFAULT 0, reactions INTEGER NOT NULL DEFAULT 0,
+      comments INTEGER NOT NULL DEFAULT 0, shares INTEGER NOT NULL DEFAULT 0,
+      score REAL NOT NULL DEFAULT 0, collected_at TEXT NOT NULL,
+      FOREIGN KEY(post_id) REFERENCES posts(id)
+    );
     CREATE INDEX IF NOT EXISTS posts_status_idx ON posts(status);
     CREATE INDEX IF NOT EXISTS events_batch_idx ON events(batch_id);
     CREATE INDEX IF NOT EXISTS topic_memory_remembered_idx ON topic_memory(remembered_at);
@@ -117,6 +124,31 @@ export function createStore(db) {
     topicMemory() {
       return db.prepare('SELECT * FROM topic_memory ORDER BY remembered_at DESC').all()
         .map((row) => ({ ...row, sources: parse(row.sources_json, []) }));
+    },
+    latestEvent(type) {
+      return db.prepare('SELECT * FROM events WHERE type=? ORDER BY id DESC LIMIT 1').get(type) || null;
+    },
+    publishedForInsights(limit = 100) {
+      return db.prepare(`SELECT id,meta_post_id,meta_photo_id,published_at FROM posts
+        WHERE status='published' AND published_at IS NOT NULL AND (meta_post_id IS NOT NULL OR meta_photo_id IS NOT NULL)
+        ORDER BY published_at DESC LIMIT ?`).all(Math.max(1, Math.min(500, limit)));
+    },
+    performanceProfiles(limit = 20) {
+      return db.prepare(`SELECT p.id AS post_id,p.category,p.topic,p.headline,p.published_at,pp.media_views,pp.unique_views,pp.reactions,pp.comments,pp.shares,pp.score,pp.collected_at
+        FROM post_performance pp JOIN posts p ON p.id=pp.post_id
+        WHERE p.status='published' ORDER BY pp.score DESC,pp.collected_at DESC LIMIT ?`).all(Math.max(1, Math.min(100, limit)));
+    },
+    savePostPerformance(postId, metrics, collectedAt = new Date().toISOString()) {
+      const mediaViews = Math.max(0, Number(metrics.mediaViews || 0));
+      const uniqueViews = Math.max(0, Number(metrics.uniqueViews || 0));
+      const reactions = Math.max(0, Number(metrics.reactions || 0));
+      const comments = Math.max(0, Number(metrics.comments || 0));
+      const shares = Math.max(0, Number(metrics.shares || 0));
+      const score = Math.log10(1 + mediaViews) + Math.log10(1 + uniqueViews) + 1.4 * Math.log10(1 + reactions + 2 * comments + 3 * shares);
+      db.prepare(`INSERT INTO post_performance(post_id,media_views,unique_views,reactions,comments,shares,score,collected_at)
+        VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(post_id) DO UPDATE SET media_views=excluded.media_views,unique_views=excluded.unique_views,reactions=excluded.reactions,comments=excluded.comments,shares=excluded.shares,score=excluded.score,collected_at=excluded.collected_at`)
+        .run(postId, mediaViews, uniqueViews, reactions, comments, shares, score, collectedAt);
+      return { postId, mediaViews, uniqueViews, reactions, comments, shares, score, collectedAt };
     },
     getBatch(id) {
       const batch = db.prepare('SELECT * FROM batches WHERE id=?').get(id);

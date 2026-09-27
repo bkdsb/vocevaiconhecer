@@ -3,6 +3,7 @@ import { open } from 'node:fs/promises';
 
 const GRAPH_ORIGIN = 'https://graph.facebook.com';
 const REQUIRED_SCOPES = ['pages_show_list', 'pages_read_engagement', 'pages_manage_posts'];
+const INSIGHTS_SCOPE = 'read_insights';
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -198,7 +199,7 @@ export function createMetaProvider(config, { fetchImpl = globalThis.fetch } = {}
         url.searchParams.set('config_id', identifier(config.metaConfigId, 'Configuration ID'));
         url.searchParams.set('override_default_response_type', 'true');
       } else {
-        url.searchParams.set('scope', REQUIRED_SCOPES.join(','));
+        url.searchParams.set('scope', [...REQUIRED_SCOPES, INSIGHTS_SCOPE].join(','));
       }
       return url.toString();
     },
@@ -269,6 +270,31 @@ export function createMetaProvider(config, { fetchImpl = globalThis.fetch } = {}
       });
       if (data.id !== pageId || typeof data.name !== 'string' || !data.name) invalidResponse();
       return { id: data.id, name: data.name };
+    },
+
+    async getPostPerformance({ postId, pageToken }) {
+      const id = secret(postId, 'Post ID');
+      const token = secret(pageToken, 'Page Access Token');
+      const base = await request(id, { token, query: { fields: 'reactions.limit(0).summary(true),comments.limit(0).summary(true),shares' } });
+      const reactions = Number(base.reactions?.summary?.total_count || 0);
+      const comments = Number(base.comments?.summary?.total_count || 0);
+      const shares = Number(base.shares?.count || 0);
+      const metric = async (name) => {
+        try {
+          const data = await request(`${id}/insights/${name}`, { token, query: { period: 'lifetime' } });
+          const value = Array.isArray(data.data) ? data.data[0]?.values?.at(-1)?.value : null;
+          if (typeof value === 'number' && Number.isFinite(value)) return value;
+          if (object(value)) return Object.values(value).filter((n) => typeof n === 'number' && Number.isFinite(n)).reduce((sum, n) => sum + n, 0);
+          return null;
+        } catch (error) {
+          if (error?.code === 'META_REJECTED') return null;
+          throw error;
+        }
+      };
+      const [mediaViews, uniqueViews] = await Promise.all([
+        metric('post_media_view'), metric('post_total_media_view_unique'),
+      ]);
+      return { mediaViews: mediaViews || 0, uniqueViews: uniqueViews || 0, reactions, comments, shares, insightsAvailable: mediaViews !== null || uniqueViews !== null };
     },
 
     async publishPhoto({ pageId, pageToken, imageBuffer, imagePath, caption, published = true }) {

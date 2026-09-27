@@ -292,9 +292,10 @@ test('topic memory survives rejected-slot deletion and blocks repeated sources o
   assert.equal(repeatsRememberedTopic({ topic: 'Descoberta inédita sobre oceanos profundos', sources: [{ url: 'https://other.test/new' }] }, memories), false);
 });
 
-test('topic memory treats AI aliases and recurring central themes as repeats', () => {
-  const memories = [{ topic: 'Claude model advances artificial intelligence', headline: 'Novo modelo de IA', sources: [] }];
-  assert.equal(repeatsRememberedTopic({ topic: 'Companies ask for AI regulation', sources: [] }, memories), true);
+test('topic memory blocks the same story but allows new AI themes to learn from performance', () => {
+  const memories = [{ topic: 'Claude model advances artificial intelligence', headline: 'Novo modelo de IA', sources: [{ url: 'https://example.test/claude' }] }];
+  assert.equal(repeatsRememberedTopic({ topic: 'Companies ask for AI regulation', sources: [{ url: 'https://other.test/regulation' }] }, memories), false);
+  assert.equal(repeatsRememberedTopic({ topic: 'Claude model advances artificial intelligence again', sources: [{ url: 'https://example.test/claude' }] }, memories), true);
   assert.equal(repeatsRememberedTopic({ topic: 'Nova espécie encontrada no oceano', sources: [] }, memories), false);
 });
 

@@ -26,17 +26,45 @@ export function aiReady(config) {
   return config.openclawAiEnabled === true || Boolean(config.aiFreeTierConfirmed === true && config.cfAccountId && config.cfApiToken);
 }
 
+export async function syncMetaInsights({ store, meta, config, now = new Date(), minIntervalMs = 6 * 60 * 60_000 }) {
+  const latest = store.latestEvent?.('meta_insights_sync');
+  if (latest?.created_at && now.getTime() - new Date(latest.created_at).getTime() < minIntervalMs) return { skipped: 'recent_sync' };
+  const posts = store.publishedForInsights?.(100) || [];
+  let synced = 0, viewsAvailable = 0, failed = 0;
+  for (const post of posts) {
+    try {
+      const metrics = await meta.getPostPerformance({ postId: post.meta_post_id || post.meta_photo_id, pageToken: config.metaPageToken });
+      store.savePostPerformance(post.id, metrics, now.toISOString());
+      synced += 1;
+      if (metrics.insightsAvailable) viewsAvailable += 1;
+    } catch (error) {
+      failed += 1;
+      store.addEvent('meta_insights_post_failed', { postId: post.id, error: error.code || 'META_INSIGHTS_ERROR' });
+    }
+  }
+  store.addEvent('meta_insights_sync', { synced, failed, total: posts.length, viewsAvailable });
+  return { synced, failed, total: posts.length, viewsAvailable };
+}
+
 export async function workerTick({
   config, store, research, now = new Date(), makeAI = createAIProvider,
   makeMessenger = createOpenClawProvider, makeMeta = createMetaProvider,
-  makeBatch = createDailyBatch, publish = publishDue, log = console.log,
+  makeBatch = createDailyBatch, publish = publishDue, syncInsights = syncMetaInsights, log = console.log,
 }) {
-  const result = { publication: { skipped: 'publishing_disabled' }, generation: { skipped: 'generation_disabled' } };
+  const result = { publication: { skipped: 'publishing_disabled' }, insights: { skipped: 'meta_not_configured' }, generation: { skipped: 'generation_disabled' } };
+  const meta = config.metaPageToken ? makeMeta(config) : null;
   if (config.metaPublishEnabled === true) {
-    try { result.publication = await publish({ store, meta: makeMeta(config), config, now }); }
+    try { result.publication = await publish({ store, meta: meta || makeMeta(config), config, now }); }
     catch (error) {
       result.publication = { error: error.code || 'META_ERROR' };
       log(JSON.stringify({ ...result.publication, message: error.message }));
+    }
+  }
+  if (meta) {
+    try { result.insights = await syncInsights({ store, meta, config, now }); }
+    catch (error) {
+      result.insights = { error: error.code || 'META_INSIGHTS_ERROR' };
+      log(JSON.stringify({ ...result.insights, message: error.message }));
     }
   }
   // Enabling WhatsApp or authenticating a provider must not start daily AI work.

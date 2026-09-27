@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
-import { aiReady, createSerialLoop, localDay, pastGenerationTime, workerTick } from '../src/worker.js';
+import { aiReady, createSerialLoop, localDay, pastGenerationTime, syncMetaInsights, workerTick } from '../src/worker.js';
 
 const config = { timezone: 'America/Sao_Paulo', generationTime: '08:00', openclawAiEnabled: true, metaPublishEnabled: false };
 const now = new Date('2026-09-25T12:00:00Z');
@@ -76,6 +76,23 @@ test('enabled worker generates once, passes research dependency, and skips a sub
   assert.equal((await workerTick(options)).generation.skipped, 'coverage_complete');
   assert.equal(calls, 1);
   assert.equal(logs[0].worker, 'batch_created');
+});
+
+test('insights sync stores performance and rate-limits itself', async () => {
+  const saved = [], events = [];
+  const store = {
+    latestEvent: () => null,
+    publishedForInsights: () => [{ id: 'p1', meta_post_id: '123_456' }],
+    savePostPerformance: (id, metrics) => saved.push([id, metrics]),
+    addEvent: (type, payload) => events.push([type, payload]),
+  };
+  const meta = { getPostPerformance: async () => ({ mediaViews: 1000, uniqueViews: 700, reactions: 40, comments: 9, shares: 5, insightsAvailable: true }) };
+  const first = await syncMetaInsights({ store, meta, config: { metaPageToken: 'x' }, now });
+  assert.equal(first.synced, 1);
+  assert.equal(saved.length, 1);
+  assert.ok(events.some(([type]) => type === 'meta_insights_sync'));
+  store.latestEvent = () => ({ created_at: now.toISOString() });
+  assert.equal((await syncMetaInsights({ store, meta, config: { metaPageToken: 'x' }, now })).skipped, 'recent_sync');
 });
 
 test('publishing already approved posts is independent of automatic generation opt-in', async () => {
