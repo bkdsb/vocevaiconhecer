@@ -51,8 +51,16 @@ export async function workerTick({
   const horizon = Math.max(0, config.coverageDaysAhead ?? 0);
   const targetDays = Array.from({ length: horizon + 1 }, (_, index) => dayOffset(today, index));
   const coverage = targetDays.map((day) => store.dayCoverage?.(day) || { day, batchId: store.batchForDay(day)?.id || null, status: store.batchForDay(day)?.status || 'missing', total: store.batchForDay(day) ? 8 : 0, rejected: 0 });
-  const targetDay = coverage.find((item) => item.status === 'missing'
-    || item.status !== 'generating' && ['blocked', 'pending_approval', 'scheduled'].includes(item.status) && (item.total < 8 || item.rejected > 0))?.day;
+  const targetDay = coverage.find((item) => {
+    if (item.status === 'missing') return true;
+    // An exhausted research pass is not a transient worker error. Retrying it on
+    // every tick only repeats the same WhatsApp warning and wastes providers.
+    const researchExhausted = String(item.warning || '').startsWith('Pesquisa incompleta');
+    return !researchExhausted
+      && item.status !== 'generating'
+      && ['blocked', 'pending_approval', 'scheduled'].includes(item.status)
+      && (item.total < 8 || item.rejected > 0);
+  })?.day;
   if (!targetDay) {
     result.generation = { skipped: 'coverage_complete', days: coverage };
     return result;

@@ -5,6 +5,50 @@ import { renderPost } from './render.js';
 import { researchTopics } from './research.js';
 
 function hash(value) { return createHash('sha256').update(value).digest('hex'); }
+const TOPIC_STOPWORDS = new Set(['a','ao','aos','as','com','da','das','de','do','dos','e','em','for','from','in','o','of','os','para','por','the','to','um','uma','with']);
+function normalizedWords(value) {
+  return new Set(String(value || '').normalize('NFD').replace(/\p{M}/gu, '').toLocaleLowerCase('pt-BR')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ').trim().split(/\s+/u).filter((word) => (word.length > 2 || word === 'ai' || word === 'ia') && !TOPIC_STOPWORDS.has(word)));
+}
+function themeTags(value) {
+  const text = ` ${String(value || '').normalize('NFD').replace(/\p{M}/gu, '').toLocaleLowerCase('pt-BR')} `;
+  const tags = [];
+  if (/\b(ai|ia|artificial intelligence|inteligencia artificial|llm|gpt|openai|anthropic|claude)\b/u.test(text)) tags.push('artificial-intelligence');
+  if (/\b(nuclear|chernobyl|reator|reactor)\b/u.test(text)) tags.push('nuclear-energy');
+  if (/\b(mouse|mice|camundongo|brain|cerebro|neurolog)\b/u.test(text)) tags.push('brain-research');
+  if (/\b(nixos|microsoft|sovereignty|soberania digital)\b/u.test(text)) tags.push('digital-sovereignty');
+  return new Set(tags);
+}
+function canonicalUrl(value) {
+  try { const url = new URL(value); return `${url.hostname.replace(/^www\./u, '')}${url.pathname.replace(/\/$/u, '')}`.toLocaleLowerCase('pt-BR'); }
+  catch { return ''; }
+}
+function overlap(left, right) {
+  if (!left.size || !right.size) return 0;
+  let shared = 0; for (const word of left) if (right.has(word)) shared += 1;
+  return shared / Math.min(left.size, right.size);
+}
+export function repeatsRememberedTopic(candidate, memories) {
+  const candidateWords = normalizedWords(`${candidate.topic || ''} ${candidate.summary || ''}`);
+  const candidateThemes = themeTags(`${candidate.topic || ''} ${candidate.summary || ''}`);
+  const candidateUrls = new Set((candidate.sources || []).map((source) => canonicalUrl(source.url)).filter(Boolean));
+  return memories.some((memory) => {
+    const rememberedThemes = themeTags(`${memory.topic || ''} ${memory.headline || ''}`);
+    if ([...candidateThemes].some((theme) => rememberedThemes.has(theme))) return true;
+    const rememberedUrls = new Set((memory.sources || []).map((source) => canonicalUrl(source.url)).filter(Boolean));
+    if ([...candidateUrls].some((url) => rememberedUrls.has(url))) return true;
+    const topicScore = overlap(normalizedWords(memory.topic), normalizedWords(candidate.topic));
+    const contextScore = overlap(normalizedWords(`${memory.topic} ${memory.headline}`), candidateWords);
+    return topicScore >= 0.8 || contextScore >= 0.72;
+  });
+}
+export function freshEnoughForPublication(candidate, now = new Date()) {
+  const text = `${candidate.topic || ''} ${candidate.summary || ''}`.normalize('NFD').replace(/\p{M}/gu, '').toLocaleLowerCase('pt-BR');
+  const fastMoving = candidate.category === 'news' || /\b(decreto|election|eleicao|governo|government|proibir|proibicao|ban|regulacao|regulation|cassino|casino|mercado|market)\b/u.test(text);
+  if (!fastMoving) return true;
+  const newest = Math.max(0, ...(candidate.sources || []).map((source) => Date.parse(source.publishedAt || '')).filter(Number.isFinite));
+  return newest > 0 && newest >= now.getTime() - 3 * 86_400_000 && newest <= now.getTime();
+}
 function safeErrorCode(error, fallback) { return /^[A-Z][A-Z0-9_]{1,63}$/.test(error?.code || '') ? error.code : fallback; }
 function shuffled(items, seed) { return [...items].sort((a, b) => hash(`${seed}:${a.id}`).localeCompare(hash(`${seed}:${b.id}`))); }
 function editorialAppeal(candidate) {
@@ -105,8 +149,8 @@ export async function createDailyBatch({ config, store, ai, renderer = renderPos
   const before = store.getBatch(batchId);
   const occupied = new Set(before.posts.filter((post) => post.status !== 'rejected').map((post) => post.slot));
   const missingSlots = Array.from({ length: 8 }, (_, index) => index + 1).filter((slot) => !occupied.has(slot));
-  const usedTopics = new Set(before.posts.map((post) => post.topic));
-  const available = result.candidates.filter((candidate) => !usedTopics.has(candidate.topic));
+  const memories = store.topicMemory();
+  const available = result.candidates.filter((candidate) => freshEnoughForPublication(candidate, now) && !repeatsRememberedTopic(candidate, memories));
   const curiosityNeeded = missingSlots.filter((slot) => slot <= 4).length;
   const newsNeeded = missingSlots.filter((slot) => slot > 4).length;
   const curiosity = select(available, 'curiosity', curiosityNeeded, `${now.toISOString()}:curiosity:${localDay}`, now);
@@ -127,12 +171,14 @@ export async function createDailyBatch({ config, store, ai, renderer = renderPos
   for (const { slot, candidate } of plan) {
     const copy = await ai.generateCopy(candidate);
     const generated = await ai.generateImage({ prompt: copy.imagePrompt });
-    const outputPath = join(config.outputDir, `${batchId}-${slot}.png`);
+    const postId = repairing ? `${batchId}_p${slot}_${randomUUID().slice(0, 4)}` : `${batchId}_p${slot}`;
+    // Every reviewed version keeps its own file. Replacements must never overwrite
+    // the visual evidence of an older or rejected preview.
+    const outputPath = join(config.outputDir, `${postId}.png`);
     await renderer({ imageBuffer: generated.buffer, headline: copy.headline, highlights: copy.highlights, outputPath });
     const digest = contentHash({ ...copy, sources: candidate.sources, imageBuffer: await readFile(outputPath) });
     const version = digest.slice(0, 16);
     if (repairing) store.removeRejectedSlot(batchId, slot);
-    const postId = repairing ? `${batchId}_p${slot}_${randomUUID().slice(0, 4)}` : `${batchId}_p${slot}`;
     store.insertPost({ id: postId, batchId, slot, category: candidate.category, topic: candidate.topic, version, contentHash: digest, headline: copy.headline, caption: copy.caption, imagePath: outputPath, sources: candidate.sources, trend: candidate.trend, status: 'pending_approval' });
     try { await messenger?.send?.({ text: `${copy.caption}\n\nResponda *APROVAR ${slot}* ou *REJEITAR ${slot}*.`, imagePath: outputPath }); }
     catch (error) { store.addEvent('preview_delivery_failed', { batchId, postId, code: safeErrorCode(error, 'DELIVERY_FAILED') }); }

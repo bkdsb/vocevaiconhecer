@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDatabase, createStore } from '../src/db.js';
 import { createMetaProvider } from '../src/providers/meta.js';
-import { contentHash, createDailyBatch, handleApprovalCommand, publishDue, scheduleBatch } from '../src/workflow.js';
+import { contentHash, createDailyBatch, freshEnoughForPublication, handleApprovalCommand, publishDue, repeatsRememberedTopic, scheduleBatch } from '../src/workflow.js';
 
 const sender = '+5511999999999';
 const approvalTime = new Date('2026-09-24T10:00:00Z');
@@ -250,7 +250,7 @@ test('repair preserves approved posts and regenerates only rejected or missing s
   const approvedBefore = f.store.getPost('post_4');
   const candidates = [
     { id: 'c3', category: 'curiosity', publishable: true, topic: 'nova-curiosidade', sources: [{ url: 'https://example.test/c3' }], trend: {} },
-    ...Array.from({ length: 4 }, (_, index) => ({ id: 'n' + index, category: 'news', publishable: true, topic: 'nova-noticia-' + index, sources: [{ url: 'https://example.test/n' + index }], trend: {} })),
+    ...Array.from({ length: 4 }, (_, index) => ({ id: 'n' + index, category: 'news', publishable: true, topic: 'nova-noticia-' + index, sources: [{ url: 'https://example.test/n' + index, publishedAt: approvalTime.toISOString() }], trend: {} })),
   ];
   const result = await createDailyBatch({
     config: { ...config, outputDir: f.dir }, store: f.store, now: approvalTime, targetDay: '2026-09-24',
@@ -270,9 +270,35 @@ test('repair preserves approved posts and regenerates only rejected or missing s
   assert.ok(batch.posts.filter((post) => [3,5,6,7,8].includes(post.slot)).every((post) => post.status === 'pending_approval'));
 });
 
+test('topic memory survives rejected-slot deletion and blocks repeated sources or substantially similar topics', async (t) => {
+  const f = await fixture(t);
+  f.store.rejectPost('post_1');
+  f.store.removeRejectedSlot('batch_test', 1);
+  const memories = f.store.topicMemory();
+  assert.ok(memories.some((item) => item.post_id === 'post_1'));
+  assert.equal(repeatsRememberedTopic({ topic: 'Tema diferente', sources: [{ url: 'https://example.test/source?utm_source=x' }] }, memories), true);
+  assert.equal(repeatsRememberedTopic({ topic: 'Teste 1 volta com outras palavras', summary: 'Teste 1 novamente', sources: [] }, memories), true);
+  assert.equal(repeatsRememberedTopic({ topic: 'Descoberta inédita sobre oceanos profundos', sources: [{ url: 'https://other.test/new' }] }, memories), false);
+});
+
+test('topic memory treats AI aliases and recurring central themes as repeats', () => {
+  const memories = [{ topic: 'Claude model advances artificial intelligence', headline: 'Novo modelo de IA', sources: [] }];
+  assert.equal(repeatsRememberedTopic({ topic: 'Companies ask for AI regulation', sources: [] }, memories), true);
+  assert.equal(repeatsRememberedTopic({ topic: 'Nova espécie encontrada no oceano', sources: [] }, memories), false);
+});
+
+test('fast-moving news and political claims require a source from the last three days', () => {
+  const current = new Date('2026-09-26T12:00:00Z');
+  const stale = { topic: 'Brazil plans decree to ban online casinos', category: 'curiosity', sources: [{ publishedAt: '2026-09-17T00:00:00Z' }] };
+  const fresh = { ...stale, sources: [{ publishedAt: '2026-09-25T00:00:00Z' }] };
+  assert.equal(freshEnoughForPublication(stale, current), false);
+  assert.equal(freshEnoughForPublication(fresh, current), true);
+  assert.equal(freshEnoughForPublication({ topic: 'Polvos resolvem labirintos', category: 'curiosity', sources: [{ publishedAt: '2020-01-01T00:00:00Z' }] }, current), true);
+});
+
 test('a generated 4+4 batch needs explicit approval even when approvalRequired=false', async (t) => {
   const f = await fixture(t);
-  const candidates = Array.from({ length: 8 }, (_, index) => ({ id: 'candidate-' + index, category: index < 4 ? 'curiosity' : 'news', publishable: true, topic: 'generated-' + index, sources: [{ url: 'https://example.test/fact' }], trend: { label: 'recent' } }));
+  const candidates = Array.from({ length: 8 }, (_, index) => ({ id: 'candidate-' + index, category: index < 4 ? 'curiosity' : 'news', publishable: true, topic: 'generated-' + index, sources: [{ url: 'https://example.test/fact-' + index, publishedAt: approvalTime.toISOString() }], trend: { label: 'recent' } }));
   const previews = [];
   const result = await createDailyBatch({
     config: { ...config, approvalRequired: false, outputDir: f.dir }, store: f.store, now: approvalTime,
@@ -324,7 +350,7 @@ test('AI and research failures notify only safe codes and await the final notice
   for (const useUnsafeCode of [false, true]) {
     const f = await fixture(t);
     const messages = [];
-    const candidates = Array.from({ length: 8 }, (_, index) => ({ id: 'candidate-' + index, category: index < 4 ? 'curiosity' : 'news', publishable: true }));
+    const candidates = Array.from({ length: 8 }, (_, index) => ({ id: 'candidate-' + index, category: index < 4 ? 'curiosity' : 'news', publishable: true, topic: 'candidate-' + index, sources: [{ url: 'https://example.test/failure-' + index, publishedAt: approvalTime.toISOString() }] }));
     const failure = Object.assign(new Error('private provider response and token'), { code: useUnsafeCode ? 'token=private\nsecret' : 'AI_QUOTA' });
     await assert.rejects(createDailyBatch({
       config: { ...config, outputDir: f.dir }, store: f.store, now: approvalTime,

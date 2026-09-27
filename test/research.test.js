@@ -186,6 +186,16 @@ test('truncation is fair across categories and searches and counts only verified
   assert.ok(result.warnings.some((warning) => warning.code === 'INSUFFICIENT_NEWS' && warning.available === 0 && warning.discovered > 0));
 });
 
+test('relaxed production research keeps a deep pool for persistent duplicate filtering', async (t) => {
+  const result = await research(t, {
+    relaxed: true,
+    runImpl: async ({ args }) => ({ stdout: JSON.stringify({ results: Array.from({ length: 50 }, (_, index) => flat(`${args[0]} item ${index}`)) }), stderr: '' }),
+  });
+  assert.equal(result.candidates.length, 64);
+  assert.equal(result.counts.retainedByCategory.news, 32);
+  assert.equal(result.counts.retainedByCategory.curiosity, 32);
+});
+
 test('research invokes trusted verifier, records coverage failures and returns reviewed candidates', async (t) => {
   const events = [];
   const result = await research(t, {

@@ -26,8 +26,14 @@ export async function openDatabase(dataDir) {
       id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, type TEXT NOT NULL,
       batch_id TEXT, post_id TEXT, payload_json TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS topic_memory (
+      post_id TEXT PRIMARY KEY, batch_id TEXT NOT NULL, category TEXT NOT NULL,
+      topic TEXT NOT NULL, headline TEXT NOT NULL, sources_json TEXT NOT NULL,
+      remembered_at TEXT NOT NULL
+    );
     CREATE INDEX IF NOT EXISTS posts_status_idx ON posts(status);
     CREATE INDEX IF NOT EXISTS events_batch_idx ON events(batch_id);
+    CREATE INDEX IF NOT EXISTS topic_memory_remembered_idx ON topic_memory(remembered_at);
   `);
   // Additive migrations preserve existing drafts and approvals. Old publications
   // without an integrity hash stay blocked until reviewed again.
@@ -37,6 +43,9 @@ export async function openDatabase(dataDir) {
     if (!columns('posts').has(field)) db.exec(`ALTER TABLE posts ADD COLUMN ${field} TEXT`);
   }
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS batches_day_idx ON batches(local_day) WHERE local_day IS NOT NULL');
+  db.exec(`INSERT OR IGNORE INTO topic_memory(post_id,batch_id,category,topic,headline,sources_json,remembered_at)
+    SELECT p.id,p.batch_id,p.category,p.topic,p.headline,p.sources_json,COALESCE(p.published_at,p.approved_at,b.created_at)
+    FROM posts p JOIN batches b ON b.id=p.batch_id`);
   return db;
 }
 
@@ -90,14 +99,24 @@ export function createStore(db) {
       });
     },
     insertPost(post) {
-      db.prepare(`INSERT INTO posts
-        (id,batch_id,slot,category,topic,version,headline,caption,image_path,sources_json,trend_json,status)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-        post.id, post.batchId, post.slot, post.category, post.topic, post.version,
-        post.headline, post.caption, post.imagePath || null, json(post.sources), json(post.trend), post.status || 'pending_approval',
-      );
-      if (post.contentHash) db.prepare('UPDATE posts SET content_hash=? WHERE id=?').run(post.contentHash, post.id);
-      addEvent.run(new Date().toISOString(), 'post_created', post.batchId, post.id, json({ version: post.version }));
+      this.transaction(() => {
+        const rememberedAt = new Date().toISOString();
+        db.prepare(`INSERT INTO posts
+          (id,batch_id,slot,category,topic,version,headline,caption,image_path,sources_json,trend_json,status)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+          post.id, post.batchId, post.slot, post.category, post.topic, post.version,
+          post.headline, post.caption, post.imagePath || null, json(post.sources), json(post.trend), post.status || 'pending_approval',
+        );
+        if (post.contentHash) db.prepare('UPDATE posts SET content_hash=? WHERE id=?').run(post.contentHash, post.id);
+        db.prepare(`INSERT OR REPLACE INTO topic_memory
+          (post_id,batch_id,category,topic,headline,sources_json,remembered_at) VALUES(?,?,?,?,?,?,?)`)
+          .run(post.id, post.batchId, post.category, post.topic, post.headline, json(post.sources), rememberedAt);
+        addEvent.run(rememberedAt, 'post_created', post.batchId, post.id, json({ version: post.version }));
+      });
+    },
+    topicMemory() {
+      return db.prepare('SELECT * FROM topic_memory ORDER BY remembered_at DESC').all()
+        .map((row) => ({ ...row, sources: parse(row.sources_json, []) }));
     },
     getBatch(id) {
       const batch = db.prepare('SELECT * FROM batches WHERE id=?').get(id);

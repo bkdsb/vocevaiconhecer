@@ -278,7 +278,10 @@ export async function researchTopics(config, { now = new Date(), clock = () => n
     }
     onProgress({ type: 'editorial_selection_finished', candidates: unique.length, eligible: eligible.length });
   }
-  let candidates = fairLimit(eligible, relaxed ? 24 : 16);
+  // Production needs a deep pool because the persistent topic memory may reject
+  // many otherwise valid discoveries. Keep strict editorial runs bounded while
+  // allowing relaxed discovery to retain enough unseen alternatives.
+  let candidates = fairLimit(eligible, relaxed ? 64 : 16);
   if (relaxed) {
     candidates = candidates.flatMap((candidate) => candidate.sources.length ? [{ ...candidate, evidenceStatus: 'discovered', publishable: true, blockedReasons: [] }] : []);
   } else if (typeof verifyImpl === 'function') candidates = await verifyCandidates(candidates, { verifyImpl, now, clock, windowDays: 15, onProgress });
