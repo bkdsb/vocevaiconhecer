@@ -292,10 +292,16 @@ export function createMetaProvider(config, { fetchImpl = globalThis.fetch } = {}
     async getPostPerformance({ postId, pageToken }) {
       const id = secret(postId, 'Post ID');
       const token = secret(pageToken, 'Page Access Token');
-      const base = await request(id, { token, query: { fields: 'reactions.limit(0).summary(true),comments.limit(0).summary(true),shares' } });
-      const reactions = Number(base.reactions?.summary?.total_count || 0);
-      const comments = Number(base.comments?.summary?.total_count || 0);
-      const shares = Number(base.shares?.count || 0);
+      let reactions = 0, comments = 0, shares = 0, engagementAvailable = false;
+      try {
+        const base = await request(id, { token, query: { fields: 'reactions.limit(0).summary(true),comments.limit(0).summary(true),shares' } });
+        reactions = Number(base.reactions?.summary?.total_count || 0);
+        comments = Number(base.comments?.summary?.total_count || 0);
+        shares = Number(base.shares?.count || 0);
+        engagementAvailable = true;
+      } catch (error) {
+        if (error?.code !== 'META_REJECTED') throw error;
+      }
       const metric = async (name) => {
         try {
           const data = await request(`${id}/insights/${name}`, { token, query: { period: 'lifetime' } });
@@ -311,7 +317,7 @@ export function createMetaProvider(config, { fetchImpl = globalThis.fetch } = {}
       const [mediaViews, uniqueViews] = await Promise.all([
         metric('post_media_view'), metric('post_total_media_view_unique'),
       ]);
-      return { mediaViews: mediaViews || 0, uniqueViews: uniqueViews || 0, reactions, comments, shares, insightsAvailable: mediaViews !== null || uniqueViews !== null };
+      return { mediaViews: mediaViews || 0, uniqueViews: uniqueViews || 0, reactions, comments, shares, engagementAvailable, insightsAvailable: mediaViews !== null || uniqueViews !== null };
     },
 
     async publishPhoto({ pageId, pageToken, imageBuffer, imagePath, caption, published = true }) {

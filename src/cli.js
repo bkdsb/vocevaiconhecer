@@ -8,7 +8,7 @@ import { loadConfig, publicConfig } from './config.js';
 import { openDatabase, createStore } from './db.js';
 import { createDailyBatch, publishDue, handleApprovalCommand } from './workflow.js';
 import { createBridgeServer } from './server.js';
-import { aiReady, workerTick, createSerialLoop } from './worker.js';
+import { aiReady, workerTick, createSerialLoop, syncMetaInsights } from './worker.js';
 import { createResearch, createVerifier } from './production.js';
 import { runScraplingProfiles } from './research.js';
 import { createPreview } from './preview.js';
@@ -44,6 +44,11 @@ async function main() {
   try {
     if (command === 'status') { console.log(JSON.stringify(store.latestBatch() || { status: 'none' }, null, 2)); return; }
     if (command === 'queue') { console.log(JSON.stringify(store.queue(), null, 2)); return; }
+    if (command === 'insights-sync') {
+      const meta = createMetaProvider(config);
+      console.log(JSON.stringify(await syncMetaInsights({ store, meta, config, minIntervalMs: 0 }), null, 2));
+      return;
+    }
     if (command === 'insights') {
       const latest = store.latestEvent('meta_insights_sync');
       console.log(JSON.stringify({ latestSync: latest ? { createdAt: latest.created_at, payload: JSON.parse(latest.payload_json || '{}') } : null, topPosts: store.performanceProfiles(20) }, null, 2));

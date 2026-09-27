@@ -14,7 +14,17 @@ test('Meta reads post performance from reactions, comments, shares and media-vie
     if (value.includes('/insights/post_total_media_view_unique')) return response({ data: [{ values: [{ value: 800 }] }] });
     return response({ reactions: { summary: { total_count: 50 } }, comments: { summary: { total_count: 12 } }, shares: { count: 7 } });
   } });
-  assert.deepEqual(await meta.getPostPerformance({ postId: '123_456', pageToken: 'page-token' }), { mediaViews: 1200, uniqueViews: 800, reactions: 50, comments: 12, shares: 7, insightsAvailable: true });
+  assert.deepEqual(await meta.getPostPerformance({ postId: '123_456', pageToken: 'page-token' }), { mediaViews: 1200, uniqueViews: 800, reactions: 50, comments: 12, shares: 7, engagementAvailable: true, insightsAvailable: true });
+});
+
+test('Meta still records view insights when engagement fields are permission-rejected', async () => {
+  const meta = createMetaProvider(cfg, { fetchImpl: async (url) => {
+    const value = String(url);
+    if (value.includes('/insights/post_media_view')) return response({ data: [{ values: [{ value: 900 }] }] });
+    if (value.includes('/insights/post_total_media_view_unique')) return response({ data: [{ values: [{ value: 600 }] }] });
+    return response({ error: { code: 10, message: 'permission' } }, 400);
+  } });
+  assert.deepEqual(await meta.getPostPerformance({ postId: '123_456', pageToken: 'page-token' }), { mediaViews: 900, uniqueViews: 600, reactions: 0, comments: 0, shares: 0, engagementAvailable: false, insightsAvailable: true });
 });
 
 test('Meta publication rejects an explicit Graph error and never retries', async () => { let calls = 0; const meta = createMetaProvider(cfg, { fetchImpl: async () => { calls += 1; return response({ error: { code: 200, error_subcode: 10, message: 'secret should not leak' } }, 403); } }); await assert.rejects(() => meta.publishPhoto({ pageId: '123', pageToken: 'page-token', imagePath: new URL('../assets/brand/logo.png', import.meta.url).pathname, caption: 'Legenda' }), (error) => error.code === 'META_REJECTED' && !error.message.includes('secret')); assert.equal(calls, 1); });
