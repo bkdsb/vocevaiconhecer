@@ -62,11 +62,11 @@ export async function checkServer(config) {
 
   // 2. VVC Worker + 3. systemd service (combined to reduce SSH calls)
   try {
-    const raw = await run('systemctl --user is-active vocevaiconhecer 2>/dev/null; echo "---"; systemctl --user show vocevaiconhecer --property=MainPID --property=ActiveState 2>/dev/null');
-    const lines = raw.trim().split('\n');
-    const serviceActive = lines[0]?.trim() === 'active';
-    const mainPid = lines.find((l) => l.startsWith('MainPID='))?.split('=')[1]?.trim();
-    report.service = { status: serviceActive ? 'active' : lines[0]?.trim() || 'unknown' };
+    const raw = await run('systemctl --user is-active vocevaiconhecer 2>/dev/null || true; echo "---"; systemctl --user show vocevaiconhecer --property=MainPID --property=ActiveState 2>/dev/null || true');
+    const sections = raw.trim().split(/^---$/m); const statusLines = (sections[0] || '').trim().split('\n'); const propLines = (sections[1] || '').trim().split('\n');
+    const serviceActive = statusLines[0]?.trim() === 'active';
+    const mainPid = propLines.find((l) => l.startsWith('MainPID='))?.split('=')[1]?.trim();
+    report.service = { status: serviceActive ? 'active' : statusLines[0]?.trim() || 'unknown' };
     report.worker = { running: serviceActive, pid: mainPid || null };
     if (!serviceActive) { report.ok = false; report.issues.push('Worker VVC não está rodando'); }
   } catch {

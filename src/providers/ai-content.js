@@ -50,7 +50,7 @@ export function validateCopy(result, candidate, fail) {
   const sourceName = (source) => {
     const host = new URL(source.url).hostname.replace(/^www\./u, '').toLowerCase();
     const known = { 'nytimes.com': 'The New York Times', 'reddit.com': 'Reddit', 'github.com': 'GitHub', 'nature.com': 'Nature', 'science.org': 'Science', 'arxiv.org': 'arXiv', 'bbc.com': 'BBC', 'bbc.co.uk': 'BBC', 'reuters.com': 'Reuters', 'apnews.com': 'Associated Press' };
-    return known[host] || host.split('.')[0].replace(/(^|[-_])([a-z])/gu, (_, sep, char) => `${sep ? ' ' : ''}${char.toUpperCase()}`);
+    const parts = host.split('.'); const domainPart = parts.length >= 2 ? parts[parts.length - 2] : parts[0]; return known[host] || domainPart.replace(/(^|[-_])([a-z])/gu, (_, sep, char) => `${sep ? ' ' : ''}${char.toUpperCase()}`);
   };
   const sourceNames = [...new Set(citedSources.map(sourceName))];
   const body = result.caption.trim();
@@ -64,7 +64,7 @@ export function decodeImageBase64(encoded, fail) {
   if (typeof encoded !== 'string' || !encoded.length || encoded.length > 4 * Math.ceil(MAX_IMAGE_BYTES / 3)
     || encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(encoded)) fail('AI_INVALID_RESPONSE', 'A imagem gerada possui codificação inválida ou excede 32 MB.');
   const bytes = Buffer.from(encoded, 'base64');
-  if (!bytes.length || bytes.length > MAX_IMAGE_BYTES || bytes.toString('base64') !== encoded) fail('AI_INVALID_RESPONSE', 'A imagem gerada possui codificação inválida ou excede 32 MB.');
+  if (!bytes.length || bytes.length > MAX_IMAGE_BYTES || bytes.toString('base64').replace(/=+$/u, '') !== encoded.replace(/=+$/u, '')) fail('AI_INVALID_RESPONSE', 'A imagem gerada possui codificação inválida ou excede 32 MB.');
   return bytes;
 }
 

@@ -253,7 +253,7 @@ export async function handleApprovalCommand({ text, sender, config, store, batch
     const resolvedId = numericSlot ? latest?.posts?.find((post) => post.slot === numericSlot)?.id : id;
     const postBefore = resolvedId ? store.getPost(resolvedId) : null;
     const suppliedVersion = command === '/VVC' ? parts[3] : parts[2];
-    const versionPrefix = numericSlot && postBefore ? postBefore.version.slice(0, 8) : suppliedVersion;
+    const versionPrefix = suppliedVersion || (numericSlot && postBefore ? postBefore.version.slice(0, 8) : undefined);
     if (!postBefore) throw Object.assign(new Error('Post não encontrado.'), { code: 'POST_NOT_FOUND' });
     if (!/^[a-f0-9]{8,16}$/i.test(versionPrefix || '') || !postBefore.version.startsWith(versionPrefix)) throw Object.assign(new Error(`Versão inválida. Use APROVAR ${id} ${postBefore.version.slice(0, 8)}.`), { code: 'STALE_VERSION' });
     let imageBuffer;

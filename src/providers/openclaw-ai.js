@@ -57,7 +57,7 @@ function validateEnvelope(envelope, model) {
   const matches = (provider, reportedModel) => provider === expectedProvider && (reportedModel === model || reportedModel === expectedModel);
   if (!matches(agent?.provider, agent?.model)) fail('AI_MODEL_MISMATCH', 'A geração não confirmou o provedor e o modelo configurados.');
   const trace = meta?.executionTrace;
-  if ((Array.isArray(agent.fallbackAttempts) && agent.fallbackAttempts.length) || trace?.fallbackUsed === true
+  if ((Array.isArray(agent?.fallbackAttempts) && agent.fallbackAttempts.length) || trace?.fallbackUsed === true
     || (trace && (trace.winnerProvider || trace.winnerModel) && !matches(trace.winnerProvider, trace.winnerModel))
     || (Array.isArray(trace?.attempts) && trace.attempts.some((attempt) => !matches(attempt.provider, attempt.model)))) fail('AI_MODEL_MISMATCH', 'O OpenClaw tentou usar um provedor ou modelo alternativo.');
   const payloads = result?.payloads;

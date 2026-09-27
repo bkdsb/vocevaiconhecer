@@ -49,7 +49,7 @@ export function createAIProvider(config, dependencies = {}) {
       const result = await call(config.imageModel, { prompt: `${prompt}. Photorealistic documentary photography, no text, no logos, no watermark, one dominant subject, natural light.`, steps: 4 });
       const encoded = result?.image ?? result;
       const buffer = await validateRaster(decodeImageBase64(encoded, fail), fail);
-      return { buffer, provider: 'cloudflare-workers-ai', model: config.imageModel, prompt, generatedAt: new Date().toISOString(), id: randomUUID() };
+      return { buffer, provider: config.imageModel.startsWith('@cf/') ? 'cloudflare-workers-ai' : config.imageModel.split('/')[0] || 'unknown', model: config.imageModel, prompt, generatedAt: new Date().toISOString(), id: randomUUID() };
     },
   };
 }

@@ -37,8 +37,9 @@ function metaCredentials(env, path) {
   }
   let file;
   try {
-    // NONBLOCK lets fstat reject named pipes without waiting for their writer.
-    file = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    // NONBLOCK lets fstat reject named pipes without waiting for their writer (Unix only; skipped on Windows where it's a no-op).
+    const flags = constants.O_RDONLY | constants.O_NOFOLLOW | (process.platform !== 'win32' ? constants.O_NONBLOCK : 0);
+    file = openSync(path, flags);
     const info = fstatSync(file);
     if (!info.isFile() || info.size <= 0 || info.size > 64 * 1024 || (info.mode & 0o077) !== 0 || typeof process.getuid === 'function' && info.uid !== process.getuid()) throw credentialsError();
     const bytes = Buffer.alloc(info.size + 1); let length = 0;
