@@ -138,13 +138,14 @@ test('verification evaluates fetched timestamps after work completes', async () 
   assert.equal(result.verification.checkedAt, later.toISOString());
 });
 
-test('research keeps 15-day pinned engine contract and disables credential sources and cookies', async (t) => {
+test('research uses 1-day politics/technology and 30-day high-impact discovery windows', async (t) => {
   const calls = [];
   const result = await research(t, { runImpl: async (call) => { calls.push(call); return { stdout: JSON.stringify({ results: [] }), stderr: '' }; } });
   assert.equal(calls.length, 7);
+  assert.equal(calls.filter((call) => call.args.includes('--days=1')).length, 2);
+  assert.equal(calls.filter((call) => call.args.includes('--days=30')).length, 5);
   for (const call of calls) {
     assert.ok(call.scriptPath.endsWith('/vendor/last30days/skills/last30days/scripts/last30days.py'));
-    assert.ok(call.args.includes('--days=15'));
     assert.ok(call.args.includes('--json-profile=raw'));
     assert.ok(call.args.includes('--no-browser-cookies'));
     assert.equal(call.timeoutMs, 1_000);
@@ -179,7 +180,7 @@ test('truncation is fair across categories and searches and counts only verified
   assert.equal(result.candidates.length, 16);
   assert.equal(result.counts.retainedByCategory.news, 8);
   assert.equal(result.counts.retainedByCategory.curiosity, 8);
-  for (const topic of ['viral surprising discoveries absurd funny facts animals space human behavior', 'Brazil unusual stories religion controversy surprising viral debate', 'technology science weird funny discoveries internet viral', 'AI new capability breakthrough technology surprising major impact', 'science medicine cure treatment breakthrough major discovery', 'Brazil politics religion society controversy divided opinions technology']) assert.ok(result.candidates.some((item) => item.topic.startsWith(topic)), topic);
+  for (const topic of ['astonishing viral curiosities unbelievable facts strange Brazil supernatural records extraordinary humans animals superpowers', 'viral controversial religion science mystery bizarre facts seems fake extraordinary discovery unprecedented', 'Brazil strange stories incredible records Brazilian champions sports science human achievement unusual animals', 'AI technology new capability launch breakthrough major impact viral surprising', 'Brazil politics controversy decision statement viral debate divided opinions today', 'science medicine cure treatment breakthrough extraordinary discovery controversial research unprecedented human impact']) assert.ok(result.candidates.some((item) => item.topic.startsWith(topic)), topic);
   assert.deepEqual(result.counts.verified, { curiosity: 0, news: 0 });
   assert.ok(result.warnings.some((warning) => warning.code === 'CANDIDATES_TRUNCATED'));
   assert.ok(result.warnings.some((warning) => warning.code === 'INSUFFICIENT_NEWS' && warning.available === 0 && warning.discovered > 0));
@@ -203,7 +204,7 @@ test('editorial selection corrects query hints before factual verification and k
   const reviewed = [];
   const topics = ['Google AI chips in space', 'GitHub image parser bug', 'Peixe que regenera órgãos', 'Opinião sobre eleição'];
   const result = await research(t, {
-    runImpl: async ({ args }) => ({ stdout: JSON.stringify({ results: args[0] === 'viral surprising discoveries absurd funny facts animals space human behavior' ? topics.map((title) => flat(title)) : [] }), stderr: '' }),
+    runImpl: async ({ args }) => ({ stdout: JSON.stringify({ results: args[0] === 'astonishing viral curiosities unbelievable facts strange Brazil supernatural records extraordinary humans animals superpowers' ? topics.map((title) => flat(title)) : [] }), stderr: '' }),
     selectImpl: async (items) => {
       assert.equal(items.length, 4);
       assert.ok(items.every((item) => item.category === 'curiosity'));
@@ -231,7 +232,7 @@ test('editorial selection corrects query hints before factual verification and k
 
 test('editorial selection runs before fair limit so rejected topics do not crowd out eligible discoveries', async (t) => {
   const result = await research(t, {
-    runImpl: async ({ args }) => ({ stdout: JSON.stringify({ results: args[0] === 'viral surprising discoveries absurd funny facts animals space human behavior' ? Array.from({ length: 52 }, (_, index) => flat(`Tema ${index}`)) : [] }), stderr: '' }),
+    runImpl: async ({ args }) => ({ stdout: JSON.stringify({ results: args[0] === 'astonishing viral curiosities unbelievable facts strange Brazil supernatural records extraordinary humans animals superpowers' ? Array.from({ length: 52 }, (_, index) => flat(`Tema ${index}`)) : [] }), stderr: '' }),
     selectImpl: async (items) => {
       assert.equal(items.length, 52);
       return items.map((item, index) => ({ id: item.id, eligible: index >= 44, category: index < 48 ? 'curiosity' : 'news', reason: 'Avaliação editorial do tema.' }));

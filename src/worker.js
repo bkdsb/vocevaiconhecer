@@ -62,7 +62,7 @@ export async function workerTick({
     return result;
   }
   try {
-    result.generation = await makeBatch({ config, store, research, now, targetDay, ai: makeAI(config), messenger: makeMessenger(config) });
+    result.generation = await makeBatch({ config, store, research, now, targetDay, ai: makeAI(config), messenger: makeMessenger(config), notifyProgress: false });
     log(JSON.stringify({ worker: result.generation.skipped ? 'batch_skipped' : 'batch_created', ...result.generation }));
   } catch (error) {
     result.generation = { error: error.code || 'BATCH_ERROR' };

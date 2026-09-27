@@ -231,17 +231,13 @@ export async function researchTopics(config, { now = new Date(), clock = () => n
   const warnings = [];
   const run = async (args) => { onProgress({ type: 'research_started', args }); const result = await runImpl({ pythonBin: config.pythonBin, scriptPath, args, timeoutMs: config.researchTimeoutMs, env }); onProgress({ type: 'research_finished' }); return parseJsonOutput(result.stdout); };
   const jobs = [
-    { label: 'global', args: ['--discover', '--emit=json', '--json-profile=raw', '--days=15', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
-    ...[
-      'viral surprising discoveries absurd funny facts animals space human behavior',
-      'Brazil unusual stories religion controversy surprising viral debate',
-      'technology science weird funny discoveries internet viral',
-    ].map((topic) => ({ label: `curiosity:${topic}`, categoryHint: 'curiosity', args: [topic, '--emit=json', '--json-profile=raw', '--days=15', '--no-browser-cookies', '--save-dir', config.last30daysDir] })),
-    ...[
-      'AI new capability breakthrough technology surprising major impact',
-      'science medicine cure treatment breakthrough major discovery',
-      'Brazil politics religion society controversy divided opinions technology',
-    ].map((topic) => ({ label: `news:${topic}`, categoryHint: 'news', args: [topic, '--emit=json', '--json-profile=raw', '--days=15', '--no-browser-cookies', '--save-dir', config.last30daysDir] })),
+    { label: 'global:30d', args: ['--discover', '--emit=json', '--json-profile=raw', '--days=30', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
+    { label: 'curiosity:impact-30d', categoryHint: 'curiosity', args: ['astonishing viral curiosities unbelievable facts strange Brazil supernatural records extraordinary humans animals superpowers', '--emit=json', '--json-profile=raw', '--days=30', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
+    { label: 'curiosity:controversy-30d', categoryHint: 'curiosity', args: ['viral controversial religion science mystery bizarre facts seems fake extraordinary discovery unprecedented', '--emit=json', '--json-profile=raw', '--days=30', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
+    { label: 'curiosity:brazil-sports-30d', categoryHint: 'curiosity', args: ['Brazil strange stories incredible records Brazilian champions sports science human achievement unusual animals', '--emit=json', '--json-profile=raw', '--days=30', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
+    { label: 'news:technology-1d', categoryHint: 'news', args: ['AI technology new capability launch breakthrough major impact viral surprising', '--emit=json', '--json-profile=raw', '--days=1', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
+    { label: 'news:politics-brazil-1d', categoryHint: 'news', args: ['Brazil politics controversy decision statement viral debate divided opinions today', '--emit=json', '--json-profile=raw', '--days=1', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
+    { label: 'news:science-medicine-30d', categoryHint: 'news', args: ['science medicine cure treatment breakthrough extraordinary discovery controversial research unprecedented human impact', '--emit=json', '--json-profile=raw', '--days=30', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
   ];
   const completed = await Promise.allSettled(jobs.map(async (job) => ({ job, report: await run(job.args) })));
   const reports = [];

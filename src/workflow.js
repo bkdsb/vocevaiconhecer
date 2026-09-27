@@ -9,15 +9,25 @@ function safeErrorCode(error, fallback) { return /^[A-Z][A-Z0-9_]{1,63}$/.test(e
 function shuffled(items, seed) { return [...items].sort((a, b) => hash(`${seed}:${a.id}`).localeCompare(hash(`${seed}:${b.id}`))); }
 function editorialAppeal(candidate) {
   const text = `${candidate.topic || ''} ${candidate.summary || ''}`.toLocaleLowerCase('pt-BR');
-  const hook = /(surpre|incr[ií]vel|estranh|rar[oa]|mister|descob|recorde|primeir|nunca|gigante|min[uú]scul|animal|espa[cç]o|universo|c[eé]rebro|sono|comida|oceano|planeta|rob[oô]|ia\b|intelig[eê]ncia artificial|cura|tratamento|vida|humano|por que|como)/iu.test(text) ? 4 : 0;
+  const hook = /(surpre|incr[ií]vel|estranh|bizar|absurd|imposs[ií]vel|parece mentira|rar[oa]|mister|sobrenatural|in[eé]dit|descob|recorde|campe[aã]o|primeir|nunca|gigante|min[uú]scul|superpoder|feito extraordin[aá]rio|animal|espa[cç]o|universo|c[eé]rebro|sono|oceano|planeta|rob[oô]|ia\b|intelig[eê]ncia artificial|cura|tratamento|avan[cç]o|vida|humano|viral|pol[eê]mic|divide opini|por que|como)/iu.test(text) ? 5 : 0;
   const technical = /(transcript[oô]mica|prote[oô]mica|metabol[oô]mica|filogen|taxonom|gen[oô]mica comparativa|ensaio de fase [ivx]+|mecanismo molecular|express[aã]o g[eê]nica|distribui[cç][aã]o geogr[aá]fica antiga|heterogeneidade|polimorfismo)/iu.test(text) ? -6 : 0;
   const metrics = Object.values(candidate.trend?.aggregateMetrics || {}).flatMap((value) => typeof value === 'number' ? [value] : value && typeof value === 'object' ? Object.values(value).filter((n) => typeof n === 'number') : []);
   const engagement = metrics.length ? Math.min(5, Math.log10(1 + Math.max(...metrics))) : 0;
   const concise = String(candidate.topic || '').split(/\s+/u).length <= 16 ? 1 : -1;
   return hook + technical + engagement + concise;
 }
-function select(candidates, category, count, seed) {
-  return shuffled(candidates.filter((candidate) => candidate.category === category && candidate.publishable), seed)
+function requiresOneDayFreshness(candidate) {
+  const text = `${candidate.topic || ''} ${candidate.summary || ''}`.toLocaleLowerCase('pt-BR');
+  return /(pol[ií]tic|governo|presidente|congresso|senado|deputad|elei[cç][aã]o|stf\b|supremo|partido|ministro|intelig[eê]ncia artificial|\bia\b|\bai\b|tecnolog|software|aplicativo|rob[oô]|chip|computador|smartphone|modelo de linguagem|chatbot)/iu.test(text);
+}
+function withinOneDay(candidate, now = new Date()) {
+  const dates = (candidate.sources || []).map((source) => source.publishedAt).filter(Boolean).map((value) => new Date(value)).filter((date) => Number.isFinite(date.getTime()));
+  if (!dates.length) return false;
+  const newest = Math.max(...dates.map((date) => date.getTime()));
+  return newest <= now.getTime() + 5 * 60_000 && newest >= now.getTime() - 24 * 60 * 60_000;
+}
+function select(candidates, category, count, seed, now = new Date()) {
+  return shuffled(candidates.filter((candidate) => candidate.category === category && candidate.publishable && (!requiresOneDayFreshness(candidate) || withinOneDay(candidate, now))), seed)
     .sort((a, b) => editorialAppeal(b) - editorialAppeal(a))
     .slice(0, count);
 }
@@ -62,7 +72,7 @@ function plannedSlots({ store, config, count, now, targetDay, excludeIds = [] })
   return selected.concat(futureSlots({ store, config, count: count - selected.length, now, excludeIds, reservedExtra: selected }));
 }
 
-export async function createDailyBatch({ config, store, ai, renderer = renderPost, messenger, research = researchTopics, now = new Date(), targetDay = null }) {
+export async function createDailyBatch({ config, store, ai, renderer = renderPost, messenger, research = researchTopics, now = new Date(), targetDay = null, notifyProgress = true }) {
   const localDay = targetDay || new Intl.DateTimeFormat('en-CA', { timeZone: config.timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
   const existing = store.batchForDay(localDay);
   let batchId;
@@ -84,6 +94,7 @@ export async function createDailyBatch({ config, store, ai, renderer = renderPos
   }
   let notices = Promise.resolve();
   const notify = (text) => {
+    if (!notifyProgress) return notices;
     notices = notices.then(() => messenger?.send?.({ text }))
       .catch((error) => { store.addEvent('progress_delivery_failed', { batchId, code: safeErrorCode(error, 'DELIVERY_FAILED') }); });
     return notices;
@@ -98,8 +109,8 @@ export async function createDailyBatch({ config, store, ai, renderer = renderPos
   const available = result.candidates.filter((candidate) => !usedTopics.has(candidate.topic));
   const curiosityNeeded = missingSlots.filter((slot) => slot <= 4).length;
   const newsNeeded = missingSlots.filter((slot) => slot > 4).length;
-  const curiosity = select(available, 'curiosity', curiosityNeeded, `${now.toISOString()}:curiosity:${localDay}`);
-  const news = select(available, 'news', newsNeeded, `${now.toISOString()}:news:${localDay}`);
+  const curiosity = select(available, 'curiosity', curiosityNeeded, `${now.toISOString()}:curiosity:${localDay}`, now);
+  const news = select(available, 'news', newsNeeded, `${now.toISOString()}:news:${localDay}`, now);
   if (curiosity.length !== curiosityNeeded || news.length !== newsNeeded) {
     const warning = `Pesquisa incompleta no last30days: faltam ${curiosityNeeded - curiosity.length} curiosidades e ${newsNeeded - news.length} notícias para completar o dia.`;
     store.setBatchStatus(batchId, originalStatus === 'scheduled' ? 'scheduled' : 'blocked', { warning });
