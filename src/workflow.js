@@ -77,6 +77,22 @@ export function freshEnoughForPublication(candidate, now = new Date()) {
 }
 function safeErrorCode(error, fallback) { return /^[A-Z][A-Z0-9_]{1,63}$/.test(error?.code || '') ? error.code : fallback; }
 function shuffled(items, seed) { return [...items].sort((a, b) => hash(`${seed}:${a.id}`).localeCompare(hash(`${seed}:${b.id}`))); }
+function winnerSubjectWords(value) {
+  const generic = new Set(['brasil','mundo','natureza','historia','histórica','historica','novo','nova','tecnologia','cientistas','pesquisadores','pessoas','cidade','regiao','região','profundezas','oceano','animal','animais','tragedia','tragédia','desastre','curioso','curiosa','incrivel','incrível','parece','mentira','verdade']);
+  return new Set([...normalizedWords(String(value || '').slice(0, 600))].filter((word) => word.length >= 5 && !generic.has(word)));
+}
+export function repeatsHistoricalWinnerSubject(candidate, winners = []) {
+  const candidateWords = winnerSubjectWords(`${candidate.topic || ''} ${candidate.summary || ''}`);
+  const candidateEntities = recentEntities(`${candidate.topic || ''} ${candidate.summary || ''}`);
+  return winners.some((winner) => {
+    const source = String(winner.message || winner.topic || winner.headline || '').slice(0, 600);
+    const winnerEntities = recentEntities(source);
+    if ([...candidateEntities].some((entity) => winnerEntities.has(entity))) return true;
+    const winnerWords = winnerSubjectWords(source);
+    const sharedSpecific = [...candidateWords].filter((word) => winnerWords.has(word));
+    return sharedSpecific.length >= 2 || sharedSpecific.some((word) => /^(nepal|tibete|galapagos|galápagos|microeledone|polvo|everest)$/u.test(word));
+  });
+}
 function performanceAffinity(candidate, profiles = []) {
   if (!profiles.length) return 0;
   const candidateWords = normalizedWords(`${candidate.topic || ''} ${candidate.summary || ''}`);
@@ -203,7 +219,7 @@ export async function createDailyBatch({ config, store, ai, renderer = renderPos
     .map((profile) => ({ ...profile, historicalWinner: true }));
   const fallbackPerformance = top5Winners.length ? [] : (store.performanceProfiles?.(5) || []);
   const editorialProfiles = [...top5Winners, ...fallbackPerformance, ...(result.inspirationProfiles || [])];
-  const available = result.candidates.filter((candidate) => freshEnoughForPublication(candidate, now) && !repeatsRememberedTopic(candidate, memories, now));
+  const available = result.candidates.filter((candidate) => freshEnoughForPublication(candidate, now) && !repeatsRememberedTopic(candidate, memories, now) && !repeatsHistoricalWinnerSubject(candidate, top5Winners));
   const curiosityNeeded = missingSlots.filter((slot) => slot <= 4).length;
   const newsNeeded = missingSlots.filter((slot) => slot > 4).length;
   const curiosity = select(available, 'curiosity', curiosityNeeded, `${now.toISOString()}:curiosity:${localDay}`, now, editorialProfiles);

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDatabase, createStore } from '../src/db.js';
 import { createMetaProvider } from '../src/providers/meta.js';
-import { contentHash, createDailyBatch, freshEnoughForPublication, handleApprovalCommand, publishDue, repeatsRememberedTopic, scheduleBatch, storyArchetypes } from '../src/workflow.js';
+import { contentHash, createDailyBatch, freshEnoughForPublication, handleApprovalCommand, publishDue, repeatsHistoricalWinnerSubject, repeatsRememberedTopic, scheduleBatch, storyArchetypes } from '../src/workflow.js';
 
 const sender = '+5511999999999';
 const approvalTime = new Date('2026-09-24T10:00:00Z');
@@ -353,6 +353,11 @@ test('historical winners teach story archetypes without repeating the same recen
   assert.ok(storyArchetypes('Enchente histórica em outra região').has('tragedy-extreme-event'));
   assert.ok(storyArchetypes('Polvo azul raro filmado no fundo do oceano').has('ocean-animal'));
   assert.ok(storyArchetypes('Peixe abissal bioluminescente aparece no oceano').has('ocean-animal'));
+  const winners = [{ message: 'Tragédia no Nepal e Tibete após enchente devastadora' }, { message: 'Polvo azul raro encontrado em Galápagos nas profundezas do oceano' }];
+  assert.equal(repeatsHistoricalWinnerSubject({ topic: 'Outra tragédia no Nepal', summary: '' }, winners), true);
+  assert.equal(repeatsHistoricalWinnerSubject({ topic: 'Outro polvo raro aparece no oceano', summary: '' }, winners), true);
+  assert.equal(repeatsHistoricalWinnerSubject({ topic: 'Peixe abissal bioluminescente encontrado no Pacífico', summary: '' }, winners), false);
+  assert.equal(repeatsHistoricalWinnerSubject({ topic: 'Terremoto destrói cidade em outra região da Ásia', summary: '' }, winners), false);
 });
 
 test('politics and technology require a source from the last 24 hours while other topics may be older', () => {
