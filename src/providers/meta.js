@@ -272,6 +272,23 @@ export function createMetaProvider(config, { fetchImpl = globalThis.fetch } = {}
       return { id: data.id, name: data.name };
     },
 
+    async diagnosePostPerformance({ postId, photoId, pageToken }) {
+      const token = secret(pageToken, 'Page Access Token');
+      const probe = async (path, query = {}) => {
+        try { await request(path, { token, query }); return { ok: true }; }
+        catch (error) { return { ok: false, code: error?.code || 'META_ERROR', httpStatus: error?.httpStatus || null, graphCode: error?.graphCode || null, graphSubcode: error?.graphSubcode || null }; }
+      };
+      const post = secret(postId, 'Post ID');
+      const photo = photoId ? secret(photoId, 'Photo ID') : null;
+      return {
+        postBase: await probe(post, { fields: 'id,message,created_time' }),
+        postEngagement: await probe(post, { fields: 'reactions.limit(0).summary(true),comments.limit(0).summary(true),shares' }),
+        photoBase: photo ? await probe(photo, { fields: 'id,name,created_time' }) : null,
+        postMediaView: await probe(`${post}/insights/post_media_view`, { period: 'lifetime' }),
+        postUniqueView: await probe(`${post}/insights/post_total_media_view_unique`, { period: 'lifetime' }),
+      };
+    },
+
     async getPostPerformance({ postId, pageToken }) {
       const id = secret(postId, 'Post ID');
       const token = secret(pageToken, 'Page Access Token');

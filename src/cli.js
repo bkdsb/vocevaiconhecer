@@ -49,6 +49,19 @@ async function main() {
       console.log(JSON.stringify({ latestSync: latest ? { createdAt: latest.created_at, payload: JSON.parse(latest.payload_json || '{}') } : null, topPosts: store.performanceProfiles(20) }, null, 2));
       return;
     }
+    if (command === 'insights-debug') {
+      const failed = db.prepare("SELECT payload_json,created_at FROM events WHERE type='meta_insights_post_failed' ORDER BY id DESC LIMIT 20").all().map((row) => ({ createdAt: row.created_at, payload: JSON.parse(row.payload_json || '{}') }));
+      const posts = db.prepare("SELECT id,headline,meta_post_id,meta_photo_id,published_at FROM posts WHERE status='published' ORDER BY published_at DESC LIMIT 20").all();
+      console.log(JSON.stringify({ failed, posts }, null, 2));
+      return;
+    }
+    if (command === 'meta-probe') {
+      const post = db.prepare("SELECT meta_post_id,meta_photo_id FROM posts WHERE status='published' AND meta_post_id IS NOT NULL ORDER BY published_at DESC LIMIT 1").get();
+      if (!post) throw new Error('Nenhum post publicado com ID Meta disponível.');
+      const meta = createMetaProvider(config);
+      console.log(JSON.stringify(await meta.diagnosePostPerformance({ postId: post.meta_post_id, photoId: post.meta_photo_id, pageToken: config.metaPageToken }), null, 2));
+      return;
+    }
     if (command === 'coverage') {
       const today = new Intl.DateTimeFormat('en-CA', { timeZone: config.timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
       const base = new Date(`${today}T12:00:00Z`);
