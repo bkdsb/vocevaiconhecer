@@ -199,6 +199,19 @@ function fairLimit(candidates, limit) {
   return output;
 }
 
+export function runScraplingProfiles({ pythonBin, scriptPath, timeoutMs = 120_000, spawnImpl = spawn } = {}) {
+  if (!pythonBin || !scriptPath) return Promise.reject(new TypeError('Configuração Scrapling incompleta.'));
+  return new Promise((resolvePromise, reject) => {
+    const child = spawnImpl(pythonBin, [scriptPath], { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = ''; let stderr = ''; let killed = false;
+    const timer = setTimeout(() => { killed = true; child.kill('SIGTERM'); setTimeout(() => child.kill('SIGKILL'), 2_000).unref?.(); }, timeoutMs);
+    child.stdout?.on('data', (chunk) => { stdout += chunk; if (stdout.length > 2_000_000) child.kill('SIGTERM'); });
+    child.stderr?.on('data', (chunk) => { stderr += chunk; });
+    child.once('error', (error) => { clearTimeout(timer); reject(Object.assign(new Error('Scrapling não pôde ser iniciado.'), { code: 'SCRAPLING_UNAVAILABLE', cause: error })); });
+    child.once('close', (code) => { clearTimeout(timer); if (killed) return reject(Object.assign(new Error('Scrapling excedeu o tempo limite.'), { code: 'SCRAPLING_TIMEOUT' })); if (code !== 0) return reject(Object.assign(new Error('Scrapling retornou erro.'), { code: 'SCRAPLING_FAILED', stderr: stderr.slice(-2_000) })); try { resolvePromise(JSON.parse(stdout)); } catch { reject(Object.assign(new Error('Saída inválida do Scrapling.'), { code: 'SCRAPLING_INVALID_RESPONSE' })); } });
+  });
+}
+
 export function runLast30Days({ pythonBin, scriptPath, args, timeoutMs = 300_000, env = {}, spawnImpl = spawn } = {}) {
   if (!pythonBin || !scriptPath || !Array.isArray(args)) return Promise.reject(new TypeError('Configuração last30days incompleta.'));
   return new Promise((resolvePromise, reject) => {
@@ -221,7 +234,7 @@ function parseJsonOutput(stdout) {
   throw Object.assign(new Error('A saída JSON do last30days é inválida.'), { code: 'RESEARCH_INVALID_RESPONSE' });
 }
 
-export async function researchTopics(config, { now = new Date(), clock = () => new Date(), onProgress = () => {}, runImpl = runLast30Days, selectImpl, verifyImpl, relaxed = false } = {}) {
+export async function researchTopics(config, { now = new Date(), clock = () => new Date(), onProgress = () => {}, runImpl = runLast30Days, scraplingImpl = runScraplingProfiles, selectImpl, verifyImpl, relaxed = false } = {}) {
   await mkdir(config.last30daysDir, { recursive: true });
   const scriptPath = resolve(config.last30daysDir, 'vendor/last30days/skills/last30days/scripts/last30days.py');
   // The pinned engine treats explicit empty credentials as opt-outs, including
@@ -249,6 +262,9 @@ export async function researchTopics(config, { now = new Date(), clock = () => n
     { label: 'news:brazil-world-1d', categoryHint: 'news', args: ['Brazil world breaking news unusual decision record discovery today', '--emit=json', '--json-profile=raw', '--days=1', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
     { label: 'news:sports-achievement-7d', categoryHint: 'news', args: ['sports record extraordinary achievement Brazilian athlete world championship this week', '--emit=json', '--json-profile=raw', '--days=7', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
   ];
+  const scraplingPromise = config.scraplingSourcesEnabled === true
+    ? scraplingImpl({ pythonBin: config.scraplingPython, scriptPath: resolve(process.cwd(), 'scripts/scrapling-sources.py'), timeoutMs: config.scraplingTimeoutMs })
+    : Promise.resolve({ profiles: [], warnings: [] });
   const completed = await Promise.allSettled(jobs.map(async (job) => ({ job, report: await run(job.args) })));
   const reports = [];
   for (const result of completed) {
@@ -263,6 +279,13 @@ export async function researchTopics(config, { now = new Date(), clock = () => n
     }
     else warnings.push({ code: result.reason?.code || 'RESEARCH_FAILED', message: result.reason?.message || 'Pesquisa indisponível.' });
   }
+  let scrapling = { profiles: [], warnings: [] };
+  try { scrapling = await scraplingPromise; }
+  catch (error) { warnings.push({ code: error?.code || 'SCRAPLING_FAILED', message: 'As fontes públicas de inspiração via Scrapling estão temporariamente indisponíveis.' }); }
+  for (const warning of scrapling.warnings || []) warnings.push({ code: 'SCRAPLING_SOURCE_WARNING', source: warning.source, detail: warning.code });
+  const inspirationProfiles = (scrapling.profiles || []).flatMap((profile) => (profile.topics || []).slice(0, 20).map((topic) => ({
+    topic, headline: topic, category: profile.category === 'news' ? 'news' : 'curiosity', score: 0.35, inspirationSource: profile.source, inspirationUrl: profile.url,
+  }))).slice(0, 160);
   const groups = reports.map((report) => normalizeReport(report, now, 15));
   const unique = mergeCandidates(groups, now, 15);
   const countCategories = (items) => ({ curiosity: items.filter((candidate) => candidate.category === 'curiosity').length, news: items.filter((candidate) => candidate.category === 'news').length });
@@ -302,7 +325,7 @@ export async function researchTopics(config, { now = new Date(), clock = () => n
   if (eligible.length > candidates.length) warnings.push({ code: 'CANDIDATES_TRUNCATED', available: eligible.length, retained: candidates.length });
   if (counts.verified.curiosity < 4) warnings.push({ code: 'INSUFFICIENT_CURIOSITIES', available: counts.verified.curiosity, discovered: counts.discoveredByCategory.curiosity, requested: 4 });
   if (counts.verified.news < 4) warnings.push({ code: 'INSUFFICIENT_NEWS', available: counts.verified.news, discovered: counts.discoveredByCategory.news, requested: 4 });
-  return { candidates, counts, editorialDecisions, coverage: reports.map((report) => ({ search: report.searchLabel, sources: report.source_status || report.feeds || {} })), warnings, generatedAt: now.toISOString(), windowDays: 15, engine: 'last30days' };
+  return { candidates, counts, editorialDecisions, inspirationProfiles, coverage: reports.map((report) => ({ search: report.searchLabel, sources: report.source_status || report.feeds || {} })), warnings, generatedAt: now.toISOString(), windowDays: 15, engine: 'last30days+scrapling' };
 }
 
 export { normalizeReport };

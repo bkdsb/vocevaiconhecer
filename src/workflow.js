@@ -56,7 +56,7 @@ function performanceAffinity(candidate, profiles = []) {
   let best = 0;
   for (const profile of profiles) {
     const similarity = overlap(candidateWords, normalizedWords(`${profile.topic || ''} ${profile.headline || ''}`));
-    const categoryBonus = candidate.category === profile.category ? 0.8 : 0;
+    const categoryBonus = similarity >= 0.12 && candidate.category === profile.category ? 0.8 : 0;
     const performanceWeight = Math.min(1.5, 1.5 * Number(profile.score || 0) / topScore);
     best = Math.max(best, similarity * 4 + categoryBonus + performanceWeight);
   }
@@ -162,11 +162,12 @@ export async function createDailyBatch({ config, store, ai, renderer = renderPos
   const missingSlots = Array.from({ length: 8 }, (_, index) => index + 1).filter((slot) => !occupied.has(slot));
   const memories = store.topicMemory();
   const performanceProfiles = store.performanceProfiles?.(20) || [];
+  const editorialProfiles = [...performanceProfiles, ...(result.inspirationProfiles || [])];
   const available = result.candidates.filter((candidate) => freshEnoughForPublication(candidate, now) && !repeatsRememberedTopic(candidate, memories));
   const curiosityNeeded = missingSlots.filter((slot) => slot <= 4).length;
   const newsNeeded = missingSlots.filter((slot) => slot > 4).length;
-  const curiosity = select(available, 'curiosity', curiosityNeeded, `${now.toISOString()}:curiosity:${localDay}`, now, performanceProfiles);
-  const news = select(available, 'news', newsNeeded, `${now.toISOString()}:news:${localDay}`, now, performanceProfiles);
+  const curiosity = select(available, 'curiosity', curiosityNeeded, `${now.toISOString()}:curiosity:${localDay}`, now, editorialProfiles);
+  const news = select(available, 'news', newsNeeded, `${now.toISOString()}:news:${localDay}`, now, editorialProfiles);
   const curiosityQueue = [...curiosity];
   const newsQueue = [...news];
   const plan = missingSlots.flatMap((slot) => {
