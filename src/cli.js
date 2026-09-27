@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, stat } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { createMetaProvider } from './providers/meta.js';
 import { createAIProvider } from './providers/ai.js';
 import { createOpenClawProvider } from './providers/openclaw.js';
@@ -9,6 +10,7 @@ import { createDailyBatch, publishDue, handleApprovalCommand } from './workflow.
 import { createBridgeServer } from './server.js';
 import { aiReady, workerTick, createSerialLoop } from './worker.js';
 import { createResearch, createVerifier } from './production.js';
+import { runScraplingProfiles } from './research.js';
 import { createPreview } from './preview.js';
 
 const config = loadConfig();
@@ -25,6 +27,11 @@ async function main() {
     console.log(JSON.stringify({ reportPath: result.reportPath, counts: result.counts, warnings: result.warnings, windowDays: result.windowDays }, null, 2));
     return;
   }
+  if (command === 'scrapling-status') {
+    const result = await runScraplingProfiles({ pythonBin: config.scraplingPython, scriptPath: resolve(process.cwd(), 'scripts/scrapling-sources.py'), timeoutMs: config.scraplingTimeoutMs });
+    console.log(JSON.stringify({ ok: true, profiles: result.profiles?.length || 0, topics: (result.profiles || []).reduce((sum, item) => sum + (item.topics?.length || 0), 0), sources: (result.profiles || []).map((item) => ({ source: item.source, status: item.status, topics: item.topics?.length || 0 })), warnings: result.warnings || [] }, null, 2));
+    return;
+  }
   if (command === 'preview') {
     const input = process.argv[3];
     if (!input || input.startsWith('--') || (await stat(input)).size > 1_000_000) throw new Error('Use preview <arquivo-candidato.json> [--send], com JSON de até 1 MB.');
@@ -37,6 +44,11 @@ async function main() {
   try {
     if (command === 'status') { console.log(JSON.stringify(store.latestBatch() || { status: 'none' }, null, 2)); return; }
     if (command === 'queue') { console.log(JSON.stringify(store.queue(), null, 2)); return; }
+    if (command === 'insights') {
+      const latest = store.latestEvent('meta_insights_sync');
+      console.log(JSON.stringify({ latestSync: latest ? { createdAt: latest.created_at, payload: JSON.parse(latest.payload_json || '{}') } : null, topPosts: store.performanceProfiles(20) }, null, 2));
+      return;
+    }
     if (command === 'coverage') {
       const today = new Intl.DateTimeFormat('en-CA', { timeZone: config.timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
       const base = new Date(`${today}T12:00:00Z`);
