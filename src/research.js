@@ -230,14 +230,24 @@ export async function researchTopics(config, { now = new Date(), clock = () => n
   const env = { ...Object.fromEntries(credentialKeys.map((key) => [key, ''])), LAST30DAYS_MEMORY_DIR: config.last30daysDir, LAST30DAYS_CONFIG_DIR: '', LAST30DAYS_SKIP_KEYCHAIN: '1', LAST30DAYS_TRUST_PROJECT_CONFIG: '0', LAST30DAYS_CORPUS_DIRS: '', LAST30DAYS_CORPUS_IN_EXPORT: '0', FROM_BROWSER: 'off' };
   const warnings = [];
   const run = async (args) => { onProgress({ type: 'research_started', args }); const result = await runImpl({ pythonBin: config.pythonBin, scriptPath, args, timeoutMs: config.researchTimeoutMs, env }); onProgress({ type: 'research_finished' }); return parseJsonOutput(result.stdout); };
+  // Use overlapping discovery lanes. A single provider or niche can degrade
+  // without starving the daily queue, while mergeCandidates still collapses
+  // the same story found by multiple searches.
   const jobs = [
     { label: 'global:30d', args: ['--discover', '--emit=json', '--json-profile=raw', '--days=30', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
+    { label: 'global:7d', args: ['viral trending surprising stories worldwide Brazil this week', '--emit=json', '--json-profile=raw', '--days=7', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
     { label: 'curiosity:impact-30d', categoryHint: 'curiosity', args: ['astonishing viral curiosities unbelievable facts strange Brazil supernatural records extraordinary humans animals superpowers', '--emit=json', '--json-profile=raw', '--days=30', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
     { label: 'curiosity:controversy-30d', categoryHint: 'curiosity', args: ['viral controversial religion science mystery bizarre facts seems fake extraordinary discovery unprecedented', '--emit=json', '--json-profile=raw', '--days=30', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
     { label: 'curiosity:brazil-sports-30d', categoryHint: 'curiosity', args: ['Brazil regional stories Nordeste Sul strange stories incredible records Brazilian champions sports science human achievement unusual animals regional culture traditions inspiring emotional viral unknown facts', '--emit=json', '--json-profile=raw', '--days=30', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
+    { label: 'curiosity:animals-nature-30d', categoryHint: 'curiosity', args: ['unusual animals rare behavior nature ocean wildlife record first discovery Brazil', '--emit=json', '--json-profile=raw', '--days=30', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
+    { label: 'curiosity:space-history-30d', categoryHint: 'curiosity', args: ['space universe archaeology ancient history mystery discovery record surprising fact', '--emit=json', '--json-profile=raw', '--days=30', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
+    { label: 'curiosity:internet-culture-7d', categoryHint: 'curiosity', args: ['viral internet culture unusual human story impressive achievement trending this week', '--emit=json', '--json-profile=raw', '--days=7', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
     { label: 'news:technology-1d', categoryHint: 'news', args: ['AI technology new capability launch breakthrough major impact viral surprising', '--emit=json', '--json-profile=raw', '--days=1', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
     { label: 'news:politics-brazil-1d', categoryHint: 'news', args: ['Brazil politics controversy decision statement viral debate divided opinions today', '--emit=json', '--json-profile=raw', '--days=1', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
-    { label: 'news:science-medicine-30d', categoryHint: 'news', args: ['science medicine cure treatment breakthrough extraordinary discovery controversial research unprecedented human impact', '--emit=json', '--json-profile=raw', '--days=30', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
+    { label: 'news:science-medicine-7d', categoryHint: 'news', args: ['science medicine cure treatment breakthrough extraordinary discovery controversial research unprecedented human impact', '--emit=json', '--json-profile=raw', '--days=7', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
+    { label: 'news:environment-space-7d', categoryHint: 'news', args: ['climate environment space astronomy energy discovery major event new study this week', '--emit=json', '--json-profile=raw', '--days=7', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
+    { label: 'news:brazil-world-1d', categoryHint: 'news', args: ['Brazil world breaking news unusual decision record discovery today', '--emit=json', '--json-profile=raw', '--days=1', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
+    { label: 'news:sports-achievement-7d', categoryHint: 'news', args: ['sports record extraordinary achievement Brazilian athlete world championship this week', '--emit=json', '--json-profile=raw', '--days=7', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
   ];
   const completed = await Promise.allSettled(jobs.map(async (job) => ({ job, report: await run(job.args) })));
   const reports = [];
@@ -281,7 +291,7 @@ export async function researchTopics(config, { now = new Date(), clock = () => n
   // Production needs a deep pool because the persistent topic memory may reject
   // many otherwise valid discoveries. Keep strict editorial runs bounded while
   // allowing relaxed discovery to retain enough unseen alternatives.
-  let candidates = fairLimit(eligible, relaxed ? 64 : 16);
+  let candidates = fairLimit(eligible, relaxed ? 128 : 24);
   if (relaxed) {
     candidates = candidates.flatMap((candidate) => candidate.sources.length ? [{ ...candidate, evidenceStatus: 'discovered', publishable: true, blockedReasons: [] }] : []);
   } else if (typeof verifyImpl === 'function') candidates = await verifyCandidates(candidates, { verifyImpl, now, clock, windowDays: 15, onProgress });

@@ -44,12 +44,25 @@ test('worker uses the persisted day reservation, including failed days, rather t
 });
 
 test('worker does not retry an exhausted incomplete research pass every tick', async () => {
+  const retryState = new Map([['reserved', now.getTime() + 60_000]]);
   const result = await workerTick({
     config: { ...config, generationEnabled: true }, now,
     store: { dayCoverage: (day) => ({ day, batchId: 'reserved', status: 'blocked', total: 5, rejected: 3, warning: 'Pesquisa incompleta no last30days: faltam pautas.' }), batchForDay: never },
-    makeAI: never, makeBatch: never, log: never,
+    retryState, makeAI: never, makeBatch: never, log: never,
   });
   assert.equal(result.generation.skipped, 'coverage_complete');
+});
+
+test('worker retries incomplete research after backoff and schedules the next retry when still partial', async () => {
+  const retryState = new Map([['reserved', now.getTime() - 1]]);
+  const result = await workerTick({
+    config: { ...config, generationEnabled: true, researchRetryMinutes: 90 }, now, retryState,
+    store: { dayCoverage: (day) => ({ day, batchId: 'reserved', status: 'blocked', total: 5, rejected: 3, warning: 'Pesquisa incompleta no last30days: faltam pautas.' }), batchForDay: never },
+    makeAI: () => ({}), makeMessenger: () => ({}), log: () => {},
+    makeBatch: async () => ({ batchId: 'reserved', selected: 2, partial: true }),
+  });
+  assert.equal(result.generation.selected, 2);
+  assert.equal(retryState.get('reserved'), now.getTime() + 90 * 60_000);
 });
 
 test('enabled worker generates once, passes research dependency, and skips a subsequent tick', async () => {

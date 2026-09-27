@@ -3,6 +3,8 @@ import { createOpenClawProvider } from './providers/openclaw.js';
 import { createMetaProvider } from './providers/meta.js';
 import { createDailyBatch, publishDue } from './workflow.js';
 
+const incompleteRetrySchedule = new Map();
+
 export function localDay(date, timezone) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
 }
@@ -50,6 +52,7 @@ export async function workerTick({
   config, store, research, now = new Date(), makeAI = createAIProvider,
   makeMessenger = createOpenClawProvider, makeMeta = createMetaProvider,
   makeBatch = createDailyBatch, publish = publishDue, syncInsights = syncMetaInsights, log = console.log,
+  retryState = incompleteRetrySchedule,
 }) {
   const result = { publication: { skipped: 'publishing_disabled' }, insights: { skipped: 'meta_not_configured' }, generation: { skipped: 'generation_disabled' } };
   const meta = config.metaPageToken ? makeMeta(config) : null;
@@ -81,10 +84,9 @@ export async function workerTick({
   const coverage = targetDays.map((day) => store.dayCoverage?.(day) || { day, batchId: store.batchForDay(day)?.id || null, status: store.batchForDay(day)?.status || 'missing', total: store.batchForDay(day) ? 8 : 0, rejected: 0 });
   const targetDay = coverage.find((item) => {
     if (item.status === 'missing') return true;
-    // An exhausted research pass is not a transient worker error. Retrying it on
-    // every tick only repeats the same WhatsApp warning and wastes providers.
     const researchExhausted = String(item.warning || '').startsWith('Pesquisa incompleta');
-    return !researchExhausted
+    const retryAt = retryState.get(item.batchId) || 0;
+    return (!researchExhausted || now.getTime() >= retryAt)
       && item.status !== 'generating'
       && ['blocked', 'pending_approval', 'scheduled'].includes(item.status)
       && (item.total < 8 || item.rejected > 0);
@@ -99,6 +101,9 @@ export async function workerTick({
   }
   try {
     result.generation = await makeBatch({ config, store, research, now, targetDay, ai: makeAI(config), messenger: makeMessenger(config), notifyProgress: false });
+    if (result.generation.blocked === 'insufficient_topics' || result.generation.partial) {
+      retryState.set(result.generation.batchId, now.getTime() + (config.researchRetryMinutes ?? 180) * 60_000);
+    } else if (result.generation.batchId) retryState.delete(result.generation.batchId);
     log(JSON.stringify({ worker: result.generation.skipped ? 'batch_skipped' : 'batch_created', ...result.generation }));
   } catch (error) {
     result.generation = { error: error.code || 'BATCH_ERROR' };

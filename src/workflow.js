@@ -167,15 +167,22 @@ export async function createDailyBatch({ config, store, ai, renderer = renderPos
   const newsNeeded = missingSlots.filter((slot) => slot > 4).length;
   const curiosity = select(available, 'curiosity', curiosityNeeded, `${now.toISOString()}:curiosity:${localDay}`, now, performanceProfiles);
   const news = select(available, 'news', newsNeeded, `${now.toISOString()}:news:${localDay}`, now, performanceProfiles);
-  if (curiosity.length !== curiosityNeeded || news.length !== newsNeeded) {
-    const warning = `Pesquisa incompleta no last30days: faltam ${curiosityNeeded - curiosity.length} curiosidades e ${newsNeeded - news.length} notícias para completar o dia.`;
-    store.setBatchStatus(batchId, originalStatus === 'scheduled' ? 'scheduled' : 'blocked', { warning });
-    await notify('⚠️ Ainda faltam algumas pautas para completar a grade. O que já foi aprovado ou agendado foi preservado.');
-    return { batchId, selected: 0, warnings: result.warnings, blocked: 'insufficient_topics', repairing };
-  }
   const curiosityQueue = [...curiosity];
   const newsQueue = [...news];
-  const plan = missingSlots.map((slot) => ({ slot, candidate: slot <= 4 ? curiosityQueue.shift() : newsQueue.shift() }));
+  const plan = missingSlots.flatMap((slot) => {
+    const candidate = slot <= 4 ? curiosityQueue.shift() : newsQueue.shift();
+    return candidate ? [{ slot, candidate }] : [];
+  });
+  const curiosityRemaining = curiosityNeeded - curiosity.length;
+  const newsRemaining = newsNeeded - news.length;
+  const incomplete = curiosityRemaining > 0 || newsRemaining > 0;
+  if (!plan.length) {
+    const warning = `Pesquisa incompleta no last30days: faltam ${curiosityRemaining} curiosidades e ${newsRemaining} notícias para completar o dia.`;
+    store.setBatchStatus(batchId, originalStatus === 'scheduled' ? 'scheduled' : 'blocked', { warning });
+    store.addEvent('research_incomplete', { batchId, curiosityRemaining, newsRemaining, selected: 0 });
+    await notify('⚠️ Ainda faltam algumas pautas para completar a grade. O que já foi aprovado ou agendado foi preservado.');
+    return { batchId, selected: 0, warnings: result.warnings, blocked: 'insufficient_topics', repairing, remaining: { curiosity: curiosityRemaining, news: newsRemaining } };
+  }
   if (plan.length) await notify(repairing
     ? `🧩 Vou completar ${plan.length} espaço(s) que faltam sem mexer no que você já aprovou.`
     : '✍️ Separei 8 pautas dos últimos 15 dias. Agora vou criar as imagens e legendas para sua aprovação.');
@@ -192,14 +199,19 @@ export async function createDailyBatch({ config, store, ai, renderer = renderPos
     const version = digest.slice(0, 16);
     if (repairing) store.removeRejectedSlot(batchId, slot);
     store.insertPost({ id: postId, batchId, slot, category: candidate.category, topic: candidate.topic, version, contentHash: digest, headline: copy.headline, caption: copy.caption, imagePath: outputPath, sources: candidate.sources, trend: candidate.trend, status: 'pending_approval' });
-    try { await messenger?.send?.({ text: `${copy.caption}\n\nResponda *APROVAR ${slot}* ou *REJEITAR ${slot}*.`, imagePath: outputPath }); }
+    const approvalCode = store.approvalCode(postId);
+    if (!approvalCode) throw Object.assign(new Error('Não foi possível criar o código sequencial da prévia.'), { code: 'APPROVAL_CODE_FAILED' });
+    try { await messenger?.send?.({ text: `${copy.caption}\n\nCódigo desta prévia: *${approvalCode}*\nResponda *APROVAR ${approvalCode}* ou *REJEITAR ${approvalCode}*.`, imagePath: outputPath }); }
     catch (error) { store.addEvent('preview_delivery_failed', { batchId, postId, code: safeErrorCode(error, 'DELIVERY_FAILED') }); }
   }
   if (store.getBatch(batchId).status !== 'paused') {
-    if (originalStatus !== 'scheduled') store.setBatchStatus(batchId, 'pending_approval', { warning: null });
+    const warning = incomplete ? `Pesquisa parcialmente concluída: faltam ${curiosityRemaining} curiosidades e ${newsRemaining} notícias para completar o dia.` : null;
+    if (originalStatus !== 'scheduled') store.setBatchStatus(batchId, 'pending_approval', { warning });
+    else if (warning) store.setBatchStatus(batchId, 'scheduled', { warning });
+    if (incomplete) store.addEvent('research_incomplete', { batchId, curiosityRemaining, newsRemaining, selected: plan.length });
     scheduleBatch({ store, config, batchId, now: new Date() });
   }
-  return { batchId, selected: plan.length, repaired: repairing, warnings: result.warnings };
+  return { batchId, selected: plan.length, repaired: repairing, partial: incomplete, remaining: { curiosity: curiosityRemaining, news: newsRemaining }, warnings: result.warnings };
   } catch (error) {
     const code = safeErrorCode(error, 'GENERATION_FAILED');
     store.setBatchStatus(batchId, originalStatus === 'scheduled' ? 'scheduled' : 'blocked', { warning: `Geração interrompida: ${code}. O que já estava aprovado ou agendado foi preservado.` });
@@ -261,13 +273,24 @@ export async function handleApprovalCommand({ text, sender, config, store, batch
   const value = String(text).trim(); const parts = value.split(/\s+/); const command = parts[0].toUpperCase();
   if (command === 'STATUS' || command === '/VVC' && parts[1]?.toUpperCase() === 'STATUS') return { text: JSON.stringify(store.latestBatch() || { status: 'none' }) };
   const verb = command === '/VVC' ? parts[1]?.toUpperCase() : command; const id = command === '/VVC' ? parts[2] : parts[1];
+  const sequentialCode = /^0\d{3,}$/.test(id || '') ? id : null;
+  const code = /^([a-f0-9]{8,16})$/i.test(id || '') ? id.toLowerCase() : null;
+  const resolvePost = () => {
+    if (sequentialCode) return store.findPostByApprovalCode?.(sequentialCode) || null;
+    if (code) {
+      const matches = store.findPostsByVersionPrefix?.(code) || [];
+      if (matches.length > 1) throw Object.assign(new Error('Código ambíguo. Use o código completo mostrado na prévia.'), { code: 'AMBIGUOUS_POST_CODE' });
+      return matches[0] || null;
+    }
+    if (/^([1-8])$/.test(id || '')) return store.latestBatch()?.posts?.find((post) => post.slot === Number(id)) || null;
+    return id ? store.getPost(id) : null;
+  };
   if (verb === 'APROVAR' && id) {
     const numericSlot = /^([1-8])$/.test(id) ? Number(id) : null;
-    const latest = numericSlot ? store.latestBatch() : null;
-    const resolvedId = numericSlot ? latest?.posts?.find((post) => post.slot === numericSlot)?.id : id;
-    const postBefore = resolvedId ? store.getPost(resolvedId) : null;
+    const postBefore = resolvePost();
+    const resolvedId = postBefore?.id;
     const suppliedVersion = command === '/VVC' ? parts[3] : parts[2];
-    const versionPrefix = suppliedVersion || (numericSlot && postBefore ? postBefore.version.slice(0, 8) : undefined);
+    const versionPrefix = code || suppliedVersion || ((sequentialCode || numericSlot) && postBefore ? postBefore.version.slice(0, 8) : undefined);
     if (!postBefore) throw Object.assign(new Error('Post não encontrado.'), { code: 'POST_NOT_FOUND' });
     if (!/^[a-f0-9]{8,16}$/i.test(versionPrefix || '') || !postBefore.version.startsWith(versionPrefix)) throw Object.assign(new Error(`Versão inválida. Use APROVAR ${id} ${postBefore.version.slice(0, 8)}.`), { code: 'STALE_VERSION' });
     let imageBuffer;
@@ -279,15 +302,15 @@ export async function handleApprovalCommand({ text, sender, config, store, batch
     const post = store.approvePost(resolvedId, now.toISOString(), postBefore);
     if (!post) throw Object.assign(new Error('Post já não está aguardando aprovação.'), { code: 'POST_NOT_PENDING' });
     const scheduled = scheduleBatch({ store, config, batchId: post.batch_id, now });
-    return { text: scheduled.scheduled ? `✅ Prévia ${numericSlot || postBefore.slot} aprovada. As prévias aprovadas estão agendadas.` : `✅ Prévia ${numericSlot || postBefore.slot} aprovada.` };
+    const reference = sequentialCode || code?.toUpperCase() || numericSlot || postBefore.slot;
+    return { text: scheduled.scheduled ? `✅ Prévia ${reference} aprovada. As prévias aprovadas estão agendadas.` : `✅ Prévia ${reference} aprovada.` };
   }
   if (verb === 'REJEITAR' && id) {
     const numericSlot = /^([1-8])$/.test(id) ? Number(id) : null;
-    const latest = numericSlot ? store.latestBatch() : null;
-    const resolvedId = numericSlot ? latest?.posts?.find((post) => post.slot === numericSlot)?.id : id;
-    const post = resolvedId ? store.rejectPost(resolvedId) : null;
+    const target = resolvePost();
+    const post = target ? store.rejectPost(target.id) : null;
     if (!post) throw Object.assign(new Error('Post não encontrado.'), { code: 'POST_NOT_FOUND' });
-    return { text: `❌ Prévia ${numericSlot || post.slot} rejeitada. Vou buscar outro tema para esse espaço e te enviar uma nova prévia para aprovação.` };
+    return { text: `❌ Prévia ${sequentialCode || code?.toUpperCase() || numericSlot || post.slot} rejeitada. Vou buscar outro tema para esse espaço e te enviar uma nova prévia para aprovação.` };
   }
   const targetBatchId = id || batchId || store.latestBatch()?.id;
   const targetBatch = targetBatchId && store.getBatch(targetBatchId);
@@ -308,5 +331,5 @@ export async function handleApprovalCommand({ text, sender, config, store, batch
     scheduleBatch({ store, config, batchId: targetBatchId, now });
     return { text: `Lote ${targetBatchId} retomado. Somente posts aprovados podem ser agendados; horários antigos foram redistribuídos.` };
   }
-  throw Object.assign(new Error('Use STATUS, APROVAR <1-8>, REJEITAR <1-8>, PAUSAR ou RETOMAR.'), { code: 'INVALID_COMMAND' });
+  throw Object.assign(new Error('Use STATUS, APROVAR <CÓDIGO>, REJEITAR <CÓDIGO>, PAUSAR ou RETOMAR.'), { code: 'INVALID_COMMAND' });
 }

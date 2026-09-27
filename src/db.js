@@ -166,6 +166,19 @@ export function createStore(db) {
         ORDER BY COALESCE(p.scheduled_at,'9999-12-31'),b.created_at,p.slot`).all();
     },
     getPost(id) { const row = db.prepare('SELECT * FROM posts WHERE id=?').get(id); return row ? { ...row, sources: parse(row.sources_json, []), trend: parse(row.trend_json, {}) } : null; },
+    approvalCode(id) {
+      const row = db.prepare("SELECT id FROM events WHERE type='post_created' AND post_id=? ORDER BY id LIMIT 1").get(id);
+      return row ? String(row.id).padStart(4, '0') : null;
+    },
+    findPostByApprovalCode(code) {
+      const row = db.prepare(`SELECT p.* FROM events e JOIN posts p ON p.id=e.post_id
+        WHERE e.id=? AND e.type='post_created' LIMIT 1`).get(Number(code));
+      return row ? { ...row, sources: parse(row.sources_json, []), trend: parse(row.trend_json, {}) } : null;
+    },
+    findPostsByVersionPrefix(prefix) {
+      return db.prepare('SELECT * FROM posts WHERE version LIKE ? ORDER BY rowid DESC LIMIT 2').all(`${prefix}%`)
+        .map((row) => ({ ...row, sources: parse(row.sources_json, []), trend: parse(row.trend_json, {}) }));
+    },
     setBatchStatus(id, status, extra = {}) {
       const fields = ['status=?']; const values = [status];
       for (const key of ['approved_at', 'paused_at', 'warning']) if (key in extra) { fields.push(`${key}=?`); values.push(extra[key]); }

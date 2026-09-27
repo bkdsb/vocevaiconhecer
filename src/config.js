@@ -102,6 +102,7 @@ export function loadConfig(env = process.env, cwd = process.cwd()) {
     last30daysSha: env.LAST30DAYS_SHA || '084662b501fb0dba95bd55eff0c258d35e0dc499',
     pythonBin: env.LAST30DAYS_PYTHON || 'python3.12',
     researchTimeoutMs: number(env.RESEARCH_TIMEOUT_MS, 300_000, 10_000, 900_000),
+    researchRetryMinutes: number(env.RESEARCH_RETRY_MINUTES, 180, 15, 1_440),
   };
 }
 

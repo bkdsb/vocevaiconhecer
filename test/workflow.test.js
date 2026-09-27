@@ -57,6 +57,28 @@ test('each approved post is scheduled immediately into the next free Brasilia sl
   assert.ok(new Date(f.store.getPost('post_8').scheduled_at) > new Date('2026-09-24T14:00:00Z'));
 });
 
+test('unique preview codes approve and reject the intended post across concurrent batches', async (t) => {
+  const f = await fixture(t);
+  const first = f.store.getPost('post_1');
+  const second = f.store.getPost('post_2');
+  await f.command(`APROVAR ${first.version.slice(0, 8).toUpperCase()}`, approvalTime);
+  await f.command(`REJEITAR ${second.version.slice(0, 8).toUpperCase()}`, approvalTime);
+  assert.equal(f.store.getPost('post_1').status, 'scheduled');
+  assert.equal(f.store.getPost('post_2').status, 'rejected');
+});
+
+test('sequential zero-padded preview numbers resolve globally without depending on slots', async (t) => {
+  const f = await fixture(t);
+  const firstCode = f.store.approvalCode('post_1');
+  const secondCode = f.store.approvalCode('post_2');
+  assert.match(firstCode, /^0\d{3,}$/);
+  assert.notEqual(firstCode, secondCode);
+  await f.command(`APROVAR ${firstCode}`, approvalTime);
+  await f.command(`REJEITAR ${secondCode}`, approvalTime);
+  assert.equal(f.store.getPost('post_1').status, 'scheduled');
+  assert.equal(f.store.getPost('post_2').status, 'rejected');
+});
+
 test('approval rejects an image changed since preview, but allows the restored reviewed bytes', async (t) => {
   const f = await fixture(t);
   await writeFile(f.imagePath, 'changed image');
@@ -279,6 +301,29 @@ test('repair preserves approved posts and regenerates only rejected or missing s
   assert.equal(f.store.getPost('post_4').version, approvedBefore.version);
   assert.ok(batch.posts.find((post) => post.slot === 3).id !== 'post_3');
   assert.ok(batch.posts.filter((post) => [3,5,6,7,8].includes(post.slot)).every((post) => post.status === 'pending_approval'));
+});
+
+test('an incomplete search generates every available replacement instead of discarding partial progress', async (t) => {
+  const f = await fixture(t);
+  f.db.prepare('UPDATE batches SET local_day=?,status=? WHERE id=?').run('2026-09-24', 'blocked', 'batch_test');
+  for (const id of ['post_1','post_2','post_3','post_4','post_5','post_6','post_7','post_8']) f.store.rejectPost(id);
+  const candidates = [
+    { id: 'c1', category: 'curiosity', publishable: true, topic: 'curiosidade parcial nova', sources: [{ url: 'https://new.test/c1' }], trend: {} },
+    { id: 'n1', category: 'news', publishable: true, topic: 'notícia parcial nova', sources: [{ url: 'https://new.test/n1', publishedAt: approvalTime.toISOString() }], trend: {} },
+  ];
+  const result = await createDailyBatch({
+    config: { ...config, outputDir: f.dir }, store: f.store, now: approvalTime, targetDay: '2026-09-24',
+    research: async () => ({ candidates, warnings: [] }),
+    ai: { generateCopy: async (candidate) => ({ headline: candidate.topic, caption: 'Legenda', highlights: [], imagePrompt: 'prompt' }), generateImage: async () => ({ buffer: f.image }) },
+    renderer: async ({ imageBuffer, outputPath }) => writeFile(outputPath, imageBuffer),
+    messenger: { send: async () => {} },
+  });
+  const batch = f.store.getBatch('batch_test');
+  assert.equal(result.selected, 2);
+  assert.equal(result.partial, true);
+  assert.deepEqual(result.remaining, { curiosity: 3, news: 3 });
+  assert.equal(batch.posts.filter((post) => post.status === 'pending_approval').length, 2);
+  assert.match(batch.warning, /faltam 3 curiosidades e 3 notícias/);
 });
 
 test('topic memory survives rejected-slot deletion and blocks repeated sources or substantially similar topics', async (t) => {

@@ -36,6 +36,20 @@ test('both providers append only the source name and no URL to the final caption
   }
 });
 
+test('source names preserve publishers behind multi-level country domains', async () => {
+  const cases = [
+    ['https://gauchazh.clicrbs.com.br/story', 'GZH'],
+    ['https://www.asiae.co.kr/article/1', 'The Asia Business Daily'],
+    ['https://example.com.br/report', 'Example'],
+    ['https://www.sciencefocus.com/news/story', 'BBC Science Focus'],
+  ];
+  for (const [url, expected] of cases) {
+    const item = { ...candidate, sources: [{ ...candidate.sources[0], url }] };
+    const ai = createAIProvider(openclaw, { execFileImpl: stubExec(envelope()) });
+    assert.equal((await ai.generateCopy(item)).caption, `Fato documentado.\n\nFonte: ${expected}`);
+  }
+});
+
 test('copy runner uses isolated sessions, shell false and marks source material as untrusted', async () => {
   const calls = [];
   const ai = createAIProvider(openclaw, { execFileImpl: stubExec(envelope(), calls) });
@@ -129,7 +143,7 @@ test('copy requires actual cited claims and respects headline, caption, image pr
   const invalid = [
     { sourceIds: [] }, { claims: [] }, { claims: [{ text: 'Fato', sourceIds: [] }] },
     { claims: [{ text: 'Fato', sourceIds: ['invented'] }] }, { sourceIds: ['invented'] },
-    { headline: Array(19).fill('palavra').join(' ') }, { caption: 'a'.repeat(901) },
+    { headline: Array(19).fill('palavra').join(' ') }, { caption: 'a'.repeat(1601) },
     { imagePrompt: '' }, { imagePrompt: 'a'.repeat(2001) }, { highlights: Array(5).fill('ANDA') },
     { caption: 'Leia em https://invented.test/' }, { highlights: [42] },
   ];

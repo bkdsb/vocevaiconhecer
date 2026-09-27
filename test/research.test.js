@@ -138,12 +138,13 @@ test('verification evaluates fetched timestamps after work completes', async () 
   assert.equal(result.verification.checkedAt, later.toISOString());
 });
 
-test('research uses 1-day politics/technology and 30-day high-impact discovery windows', async (t) => {
+test('research combines 1-day breaking news, 7-day trends and 30-day evergreen discovery lanes', async (t) => {
   const calls = [];
   const result = await research(t, { runImpl: async (call) => { calls.push(call); return { stdout: JSON.stringify({ results: [] }), stderr: '' }; } });
-  assert.equal(calls.length, 7);
-  assert.equal(calls.filter((call) => call.args.includes('--days=1')).length, 2);
-  assert.equal(calls.filter((call) => call.args.includes('--days=30')).length, 5);
+  assert.equal(calls.length, 14);
+  assert.equal(calls.filter((call) => call.args.includes('--days=1')).length, 3);
+  assert.equal(calls.filter((call) => call.args.includes('--days=7')).length, 5);
+  assert.equal(calls.filter((call) => call.args.includes('--days=30')).length, 6);
   for (const call of calls) {
     assert.ok(call.scriptPath.endsWith('/vendor/last30days/skills/last30days/scripts/last30days.py'));
     assert.ok(call.args.includes('--json-profile=raw'));
@@ -165,21 +166,21 @@ test('cross-search duplicates merge evidence and preserve explicit topical categ
   const result = await research(t, { runImpl: async ({ args }) => ({ stdout: JSON.stringify(args[0] === '--discover'
     ? { topics: [{ name: 'Animal repetido', evidence_urls: ['https://www.reddit.com/r/science/a?utm_source=example'] }] }
     : { results: [flat('Outro título para o mesmo animal', { url: 'https://reddit.com/r/science/a' })] }), stderr: '' }) });
-  assert.equal(result.counts.discovered, 7);
+  assert.equal(result.counts.discovered, 14);
   assert.equal(result.counts.unique, 1);
   assert.equal(result.candidates[0].sources.length, 1);
   assert.equal(result.candidates[0].sources[0].text, 'Discussão recente do tema.');
   assert.equal(result.candidates[0].trend.hasRecentSignal, true);
   assert.equal(result.candidates[0].category, 'curiosity');
-  assert.equal(result.candidates[0].raw.searches.length, 7);
+  assert.equal(result.candidates[0].raw.searches.length, 14);
 });
 
 test('truncation is fair across categories and searches and counts only verified items as available', async (t) => {
   const result = await research(t, { runImpl: async ({ args }) => ({ stdout: JSON.stringify({ results: Array.from({ length: 50 }, (_, index) => flat(`${args[0]} item ${index}`)) }), stderr: '' }) });
-  assert.equal(result.counts.discovered, 350);
-  assert.equal(result.candidates.length, 16);
-  assert.equal(result.counts.retainedByCategory.news, 8);
-  assert.equal(result.counts.retainedByCategory.curiosity, 8);
+  assert.equal(result.counts.discovered, 700);
+  assert.equal(result.candidates.length, 24);
+  assert.equal(result.counts.retainedByCategory.news, 12);
+  assert.equal(result.counts.retainedByCategory.curiosity, 12);
   for (const topic of ['astonishing viral curiosities unbelievable facts strange Brazil supernatural records extraordinary humans animals superpowers', 'viral controversial religion science mystery bizarre facts seems fake extraordinary discovery unprecedented', 'Brazil regional stories Nordeste Sul strange stories incredible records Brazilian champions sports science human achievement unusual animals regional culture traditions inspiring emotional viral unknown facts', 'AI technology new capability launch breakthrough major impact viral surprising', 'Brazil politics controversy decision statement viral debate divided opinions today', 'science medicine cure treatment breakthrough extraordinary discovery controversial research unprecedented human impact']) assert.ok(result.candidates.some((item) => item.topic.startsWith(topic)), topic);
   assert.deepEqual(result.counts.verified, { curiosity: 0, news: 0 });
   assert.ok(result.warnings.some((warning) => warning.code === 'CANDIDATES_TRUNCATED'));
@@ -191,9 +192,9 @@ test('relaxed production research keeps a deep pool for persistent duplicate fil
     relaxed: true,
     runImpl: async ({ args }) => ({ stdout: JSON.stringify({ results: Array.from({ length: 50 }, (_, index) => flat(`${args[0]} item ${index}`)) }), stderr: '' }),
   });
-  assert.equal(result.candidates.length, 64);
-  assert.equal(result.counts.retainedByCategory.news, 32);
-  assert.equal(result.counts.retainedByCategory.curiosity, 32);
+  assert.equal(result.candidates.length, 128);
+  assert.equal(result.counts.retainedByCategory.news, 64);
+  assert.equal(result.counts.retainedByCategory.curiosity, 64);
 });
 
 test('research invokes trusted verifier, records coverage failures and returns reviewed candidates', async (t) => {
