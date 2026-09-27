@@ -32,7 +32,7 @@ export async function syncMetaInsights({ store, meta, config, now = new Date(), 
   const latest = store.latestEvent?.('meta_insights_sync');
   if (latest?.created_at && now.getTime() - new Date(latest.created_at).getTime() < minIntervalMs) return { skipped: 'recent_sync' };
   const posts = store.publishedForInsights?.(100) || [];
-  let synced = 0, viewsAvailable = 0, failed = 0;
+  let synced = 0, viewsAvailable = 0, failed = 0, historicalSynced = 0, historicalFailed = 0;
   for (const post of posts) {
     try {
       const metrics = await meta.getPostPerformance({ postId: post.meta_post_id || post.meta_photo_id, pageToken: config.metaPageToken });
@@ -44,8 +44,26 @@ export async function syncMetaInsights({ store, meta, config, now = new Date(), 
       store.addEvent('meta_insights_post_failed', { postId: post.id, error: error.code || 'META_INSIGHTS_ERROR' });
     }
   }
-  store.addEvent('meta_insights_sync', { synced, failed, total: posts.length, viewsAvailable });
-  return { synced, failed, total: posts.length, viewsAvailable };
+  if (typeof meta.listPublishedPosts === 'function' && typeof store.saveHistoricalPerformance === 'function') {
+    try {
+      const historical = await meta.listPublishedPosts({ pageId: config.metaPageId, pageToken: config.metaPageToken, limit: 100 });
+      for (const post of historical) {
+        try {
+          const metrics = await meta.getPostPerformance({ postId: post.id, pageToken: config.metaPageToken });
+          store.saveHistoricalPerformance(post.id, post.message, post.createdTime, metrics, now.toISOString());
+          historicalSynced += 1;
+        } catch (error) {
+          historicalFailed += 1;
+          store.addEvent('meta_history_post_failed', { metaPostId: post.id, error: error.code || 'META_INSIGHTS_ERROR' });
+        }
+      }
+    } catch (error) {
+      historicalFailed += 1;
+      store.addEvent('meta_history_sync_failed', { error: error.code || 'META_HISTORY_ERROR' });
+    }
+  }
+  store.addEvent('meta_insights_sync', { synced, failed, total: posts.length, viewsAvailable, historicalSynced, historicalFailed });
+  return { synced, failed, total: posts.length, viewsAvailable, historicalSynced, historicalFailed };
 }
 
 export async function workerTick({

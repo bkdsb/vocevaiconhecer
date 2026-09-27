@@ -264,6 +264,26 @@ export function createMetaProvider(config, { fetchImpl = globalThis.fetch } = {}
       return data;
     },
 
+    async listPublishedPosts({ pageId, pageToken, limit = 100 }) {
+      const id = identifier(pageId, 'Page ID');
+      const token = secret(pageToken, 'Page Access Token');
+      const out = [];
+      let after;
+      while (out.length < limit) {
+        const data = await request(`${id}/published_posts`, { token, query: { fields: 'id,message,created_time', limit: Math.min(100, limit - out.length), ...(after ? { after } : {}) } });
+        if (!Array.isArray(data.data)) invalidResponse();
+        for (const item of data.data) {
+          if (!object(item) || typeof item.id !== 'string') continue;
+          out.push({ id: item.id, message: typeof item.message === 'string' ? item.message : '', createdTime: item.created_time || null });
+          if (out.length >= limit) break;
+        }
+        if (!data.paging?.next) break;
+        after = data.paging?.cursors?.after;
+        if (typeof after !== 'string' || !after) break;
+      }
+      return out;
+    },
+
     async verifyPage({ pageId, pageToken }) {
       const data = await request(identifier(pageId, 'Page ID'), {
         token: secret(pageToken, 'Page Access Token'), query: { fields: 'id,name' },

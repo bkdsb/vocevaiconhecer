@@ -38,6 +38,13 @@ export async function openDatabase(dataDir) {
       score REAL NOT NULL DEFAULT 0, collected_at TEXT NOT NULL,
       FOREIGN KEY(post_id) REFERENCES posts(id)
     );
+    CREATE TABLE IF NOT EXISTS page_post_history (
+      meta_post_id TEXT PRIMARY KEY, message TEXT NOT NULL DEFAULT '', created_time TEXT,
+      media_views INTEGER NOT NULL DEFAULT 0, unique_views INTEGER NOT NULL DEFAULT 0,
+      reactions INTEGER NOT NULL DEFAULT 0, comments INTEGER NOT NULL DEFAULT 0,
+      shares INTEGER NOT NULL DEFAULT 0, score REAL NOT NULL DEFAULT 0,
+      collected_at TEXT NOT NULL
+    );
     CREATE INDEX IF NOT EXISTS posts_status_idx ON posts(status);
     CREATE INDEX IF NOT EXISTS events_batch_idx ON events(batch_id);
     CREATE INDEX IF NOT EXISTS topic_memory_remembered_idx ON topic_memory(remembered_at);
@@ -137,6 +144,22 @@ export function createStore(db) {
       return db.prepare(`SELECT p.id AS post_id,p.category,p.topic,p.headline,p.published_at,pp.media_views,pp.unique_views,pp.reactions,pp.comments,pp.shares,pp.score,pp.collected_at
         FROM post_performance pp JOIN posts p ON p.id=pp.post_id
         WHERE p.status='published' ORDER BY pp.score DESC,pp.collected_at DESC LIMIT ?`).all(Math.max(1, Math.min(100, limit)));
+    },
+    saveHistoricalPerformance(metaPostId, message, createdTime, metrics, collectedAt = new Date().toISOString()) {
+      const mediaViews = Math.max(0, Number(metrics.mediaViews || 0));
+      const uniqueViews = Math.max(0, Number(metrics.uniqueViews || 0));
+      const reactions = Math.max(0, Number(metrics.reactions || 0));
+      const comments = Math.max(0, Number(metrics.comments || 0));
+      const shares = Math.max(0, Number(metrics.shares || 0));
+      const score = Math.log10(1 + mediaViews) + Math.log10(1 + uniqueViews) + 1.4 * Math.log10(1 + reactions + 2 * comments + 3 * shares);
+      db.prepare(`INSERT INTO page_post_history(meta_post_id,message,created_time,media_views,unique_views,reactions,comments,shares,score,collected_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(meta_post_id) DO UPDATE SET message=excluded.message,created_time=excluded.created_time,media_views=excluded.media_views,unique_views=excluded.unique_views,reactions=excluded.reactions,comments=excluded.comments,shares=excluded.shares,score=excluded.score,collected_at=excluded.collected_at`)
+        .run(metaPostId, String(message || '').slice(0, 12000), createdTime || null, mediaViews, uniqueViews, reactions, comments, shares, score, collectedAt);
+      return { metaPostId, mediaViews, uniqueViews, reactions, comments, shares, score, collectedAt };
+    },
+    historicalPerformanceProfiles(limit = 10) {
+      return db.prepare(`SELECT meta_post_id,message,created_time,media_views,unique_views,reactions,comments,shares,score,collected_at
+        FROM page_post_history ORDER BY score DESC,collected_at DESC LIMIT ?`).all(Math.max(1, Math.min(100, limit)));
     },
     savePostPerformance(postId, metrics, collectedAt = new Date().toISOString()) {
       const mediaViews = Math.max(0, Number(metrics.mediaViews || 0));

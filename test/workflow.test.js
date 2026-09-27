@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDatabase, createStore } from '../src/db.js';
 import { createMetaProvider } from '../src/providers/meta.js';
-import { contentHash, createDailyBatch, freshEnoughForPublication, handleApprovalCommand, publishDue, repeatsRememberedTopic, scheduleBatch } from '../src/workflow.js';
+import { contentHash, createDailyBatch, freshEnoughForPublication, handleApprovalCommand, publishDue, repeatsRememberedTopic, scheduleBatch, storyArchetypes } from '../src/workflow.js';
 
 const sender = '+5511999999999';
 const approvalTime = new Date('2026-09-24T10:00:00Z');
@@ -342,6 +342,17 @@ test('topic memory blocks the same story but allows new AI themes to learn from 
   assert.equal(repeatsRememberedTopic({ topic: 'Companies ask for AI regulation', sources: [{ url: 'https://other.test/regulation' }] }, memories), false);
   assert.equal(repeatsRememberedTopic({ topic: 'Claude model advances artificial intelligence again', sources: [{ url: 'https://example.test/claude' }] }, memories), true);
   assert.equal(repeatsRememberedTopic({ topic: 'Nova espécie encontrada no oceano', sources: [] }, memories), false);
+});
+
+test('historical winners teach story archetypes without repeating the same recent entity', () => {
+  const now = new Date('2026-09-27T12:00:00Z');
+  const memories = [{ topic: 'Tragédia no Nepal deixa dezenas de mortos', headline: 'Terremoto atinge Nepal', remembered_at: '2026-09-26T12:00:00Z', sources: [] }];
+  assert.equal(repeatsRememberedTopic({ topic: 'Novo deslizamento no Nepal causa vítimas', summary: '', sources: [] }, memories, now), true);
+  assert.equal(repeatsRememberedTopic({ topic: 'Enchente histórica atinge cidade na Ásia', summary: '', sources: [] }, memories, now), false);
+  assert.ok(storyArchetypes('Tragédia após terremoto no Nepal').has('tragedy-extreme-event'));
+  assert.ok(storyArchetypes('Enchente histórica em outra região').has('tragedy-extreme-event'));
+  assert.ok(storyArchetypes('Polvo azul raro filmado no fundo do oceano').has('ocean-animal'));
+  assert.ok(storyArchetypes('Peixe abissal bioluminescente aparece no oceano').has('ocean-animal'));
 });
 
 test('politics and technology require a source from the last 24 hours while other topics may be older', () => {

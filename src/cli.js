@@ -51,7 +51,8 @@ async function main() {
     }
     if (command === 'insights') {
       const latest = store.latestEvent('meta_insights_sync');
-      console.log(JSON.stringify({ latestSync: latest ? { createdAt: latest.created_at, payload: JSON.parse(latest.payload_json || '{}') } : null, topPosts: store.performanceProfiles(20) }, null, 2));
+      const historicalTop10 = store.historicalPerformanceProfiles?.(10) || [];
+      console.log(JSON.stringify({ latestSync: latest ? { createdAt: latest.created_at, payload: JSON.parse(latest.payload_json || '{}') } : null, historicalTop10, activeTop5: historicalTop10.slice(0, 5), localTopPosts: store.performanceProfiles(20) }, null, 2));
       return;
     }
     if (command === 'insights-debug') {

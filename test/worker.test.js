@@ -91,21 +91,27 @@ test('enabled worker generates once, passes research dependency, and skips a sub
   assert.equal(logs[0].worker, 'batch_created');
 });
 
-test('insights sync stores performance and rate-limits itself', async () => {
-  const saved = [], events = [];
+test('insights sync stores local and historical Page performance and rate-limits itself', async () => {
+  const saved = [], historical = [], events = [];
   const store = {
     latestEvent: () => null,
     publishedForInsights: () => [{ id: 'p1', meta_post_id: '123_456' }],
     savePostPerformance: (id, metrics) => saved.push([id, metrics]),
+    saveHistoricalPerformance: (...args) => historical.push(args),
     addEvent: (type, payload) => events.push([type, payload]),
   };
-  const meta = { getPostPerformance: async () => ({ mediaViews: 1000, uniqueViews: 700, reactions: 40, comments: 9, shares: 5, insightsAvailable: true }) };
-  const first = await syncMetaInsights({ store, meta, config: { metaPageToken: 'x' }, now });
+  const meta = {
+    listPublishedPosts: async () => [{ id: '123_old', message: 'Polvo azul raro no oceano', createdTime: '2025-01-01T00:00:00Z' }],
+    getPostPerformance: async () => ({ mediaViews: 1000, uniqueViews: 700, reactions: 40, comments: 9, shares: 5, insightsAvailable: true }),
+  };
+  const first = await syncMetaInsights({ store, meta, config: { metaPageId: '123', metaPageToken: 'x' }, now });
   assert.equal(first.synced, 1);
+  assert.equal(first.historicalSynced, 1);
   assert.equal(saved.length, 1);
+  assert.equal(historical[0][0], '123_old');
   assert.ok(events.some(([type]) => type === 'meta_insights_sync'));
   store.latestEvent = () => ({ created_at: now.toISOString() });
-  assert.equal((await syncMetaInsights({ store, meta, config: { metaPageToken: 'x' }, now })).skipped, 'recent_sync');
+  assert.equal((await syncMetaInsights({ store, meta, config: { metaPageId: '123', metaPageToken: 'x' }, now })).skipped, 'recent_sync');
 });
 
 test('publishing already approved posts is independent of automatic generation opt-in', async () => {

@@ -10,6 +10,29 @@ function normalizedWords(value) {
   return new Set(String(value || '').normalize('NFD').replace(/\p{M}/gu, '').toLocaleLowerCase('pt-BR')
     .replace(/[^\p{L}\p{N}]+/gu, ' ').trim().split(/\s+/u).filter((word) => (word.length > 2 || word === 'ai' || word === 'ia') && !TOPIC_STOPWORDS.has(word)));
 }
+export function storyArchetypes(value) {
+  const text = ` ${String(value || '').normalize('NFD').replace(/\p{M}/gu, '').toLocaleLowerCase('pt-BR')} `;
+  const rules = [
+    ['tragedy-extreme-event', /(trag[eé]dia|desastre|terremoto|enchente|inc[eê]ndio|acidente|desabamento|cat[aá]strofe|mortes?)/u],
+    ['ocean-animal', /(polvo|tubar[aã]o|baleia|golfinho|peixe|oceano|marinho|marinha|abissal|coral)/u],
+    ['extraordinary-animal', /(animal|esp[eé]cie|superpoder|veneno|biolum|camuflag|regenera|capacidade incomum)/u],
+    ['human-achievement', /(recorde|campe[aã]o|feito humano|supera[cç][aã]o|atleta|conquista|primeiro humano)/u],
+    ['medical-breakthrough', /(cura|tratamento|terapia|medicina|doen[cç]a|paciente|vacina|transplante)/u],
+    ['science-discovery', /(descoberta|cientista|pesquisa|estudo|f[oó]ssil|arqueolog|experimento)/u],
+    ['technology-ai', /(tecnolog|intelig[eê]ncia artificial|\bia\b|\bai\b|rob[oô]|chip|software|computador)/u],
+    ['mystery-supernatural', /(mist[eé]rio|sobrenatural|fantasma|ovni|ufo|inexplic[aá]vel|assombra)/u],
+    ['politics-controversy', /(pol[ií]tic|governo|presidente|congresso|stf|elei[cç][aã]o|ministro|pol[eê]mic|divide opini)/u],
+    ['religion-controversy', /(religi[aã]o|igreja|padre|pastor|papa|milagre|f[eé]|b[ií]blia)/u],
+    ['space-universe', /(espa[cç]o|universo|planeta|estrela|aster[oó]ide|nasa|lua|marte)/u],
+    ['weird-unbelievable', /(bizar|absurd|estranh|parece mentira|inacredit[aá]vel|in[eé]dit|nunca visto)/u],
+    ['brazil-regional', /(brasil|brasileir|nordeste|sul|paran[aá]|bahia|cear[aá]|pernambuco|rio grande do sul|santa catarina)/u],
+  ];
+  return new Set(rules.filter(([, pattern]) => pattern.test(text)).map(([name]) => name));
+}
+function recentEntities(value) {
+  const ignored = new Set(['Brasil','Brazil','Cientistas','Pesquisadores','Governo','Estudo','Pesquisa','Novo','Nova','Homem','Mulher','Mundo','Por','Como','Uma','Uns','Isso','Esta','Este']);
+  return new Set((String(value || '').match(/\b[\p{Lu}][\p{L}\d-]{2,}(?:\s+[\p{Lu}][\p{L}\d-]{2,}){0,2}\b/gu) || []).filter((item) => !ignored.has(item)));
+}
 function themeTags(value) {
   const text = ` ${String(value || '').normalize('NFD').replace(/\p{M}/gu, '').toLocaleLowerCase('pt-BR')} `;
   const tags = [];
@@ -28,13 +51,18 @@ function overlap(left, right) {
   let shared = 0; for (const word of left) if (right.has(word)) shared += 1;
   return shared / Math.min(left.size, right.size);
 }
-export function repeatsRememberedTopic(candidate, memories) {
+export function repeatsRememberedTopic(candidate, memories, now = new Date()) {
   const candidateWords = normalizedWords(`${candidate.topic || ''} ${candidate.summary || ''}`);
   const candidateThemes = themeTags(`${candidate.topic || ''} ${candidate.summary || ''}`);
+  const candidateEntities = recentEntities(`${candidate.topic || ''} ${candidate.summary || ''}`);
   const candidateUrls = new Set((candidate.sources || []).map((source) => canonicalUrl(source.url)).filter(Boolean));
   return memories.some((memory) => {
-    const rememberedThemes = themeTags(`${memory.topic || ''} ${memory.headline || ''}`);
-    if ([...candidateThemes].some((theme) => theme !== 'artificial-intelligence' && rememberedThemes.has(theme))) return true;
+    const rememberedAt = Date.parse(memory.remembered_at || memory.rememberedAt || '');
+    const entityCooldown = Number.isFinite(rememberedAt) && now.getTime() - rememberedAt <= 14 * 86_400_000;
+    if (entityCooldown) {
+      const rememberedEntities = recentEntities(`${memory.topic || ''} ${memory.headline || ''}`);
+      if ([...candidateEntities].some((entity) => rememberedEntities.has(entity))) return true;
+    }
     const rememberedUrls = new Set((memory.sources || []).map((source) => canonicalUrl(source.url)).filter(Boolean));
     if ([...candidateUrls].some((url) => rememberedUrls.has(url))) return true;
     const topicScore = overlap(normalizedWords(memory.topic), normalizedWords(candidate.topic));
@@ -52,15 +80,23 @@ function shuffled(items, seed) { return [...items].sort((a, b) => hash(`${seed}:
 function performanceAffinity(candidate, profiles = []) {
   if (!profiles.length) return 0;
   const candidateWords = normalizedWords(`${candidate.topic || ''} ${candidate.summary || ''}`);
-  const topScore = Math.max(1, Number(profiles[0]?.score || 1));
-  let best = 0;
-  for (const profile of profiles) {
-    const similarity = overlap(candidateWords, normalizedWords(`${profile.topic || ''} ${profile.headline || ''}`));
-    const categoryBonus = similarity >= 0.12 && candidate.category === profile.category ? 0.8 : 0;
-    const performanceWeight = Math.min(1.5, 1.5 * Number(profile.score || 0) / topScore);
-    best = Math.max(best, similarity * 4 + categoryBonus + performanceWeight);
+  const candidateArchetypes = storyArchetypes(`${candidate.topic || ''} ${candidate.summary || ''}`);
+  const winners = profiles.filter((profile) => profile.historicalWinner === true);
+  let winnerBonus = 0;
+  if (winners.length) {
+    const index = Number.parseInt(hash(`${candidate.id || candidate.topic}:winner`).slice(0, 8), 16) % winners.length;
+    const winner = winners[index];
+    const winnerArchetypes = storyArchetypes(winner.message || `${winner.topic || ''} ${winner.headline || ''}`);
+    const archetypeSimilarity = overlap(candidateArchetypes, winnerArchetypes);
+    if (archetypeSimilarity > 0) winnerBonus = Math.min(3.2, 1.4 + archetypeSimilarity * 2.2);
   }
-  return Math.min(4, best);
+  let externalBonus = 0;
+  for (const profile of profiles.filter((item) => item.historicalWinner !== true)) {
+    const similarity = overlap(candidateWords, normalizedWords(`${profile.topic || ''} ${profile.headline || ''}`));
+    const categoryBonus = similarity >= 0.12 && candidate.category === profile.category ? 0.5 : 0;
+    externalBonus = Math.max(externalBonus, similarity * 2.5 + categoryBonus);
+  }
+  return Math.min(4, winnerBonus + Math.min(1.2, externalBonus));
 }
 function editorialAppeal(candidate, profiles = []) {
   const text = `${candidate.topic || ''} ${candidate.summary || ''}`.toLocaleLowerCase('pt-BR');
@@ -161,9 +197,13 @@ export async function createDailyBatch({ config, store, ai, renderer = renderPos
   const occupied = new Set(before.posts.filter((post) => post.status !== 'rejected').map((post) => post.slot));
   const missingSlots = Array.from({ length: 8 }, (_, index) => index + 1).filter((slot) => !occupied.has(slot));
   const memories = store.topicMemory();
-  const performanceProfiles = store.performanceProfiles?.(20) || [];
-  const editorialProfiles = [...performanceProfiles, ...(result.inspirationProfiles || [])];
-  const available = result.candidates.filter((candidate) => freshEnoughForPublication(candidate, now) && !repeatsRememberedTopic(candidate, memories));
+  const historicalTop10 = store.historicalPerformanceProfiles?.(10) || [];
+  const top5Winners = [...historicalTop10.slice(0, 5)]
+    .sort((a, b) => hash(`${batchId}:${localDay}:${a.meta_post_id}`).localeCompare(hash(`${batchId}:${localDay}:${b.meta_post_id}`)))
+    .map((profile) => ({ ...profile, historicalWinner: true }));
+  const fallbackPerformance = top5Winners.length ? [] : (store.performanceProfiles?.(5) || []);
+  const editorialProfiles = [...top5Winners, ...fallbackPerformance, ...(result.inspirationProfiles || [])];
+  const available = result.candidates.filter((candidate) => freshEnoughForPublication(candidate, now) && !repeatsRememberedTopic(candidate, memories, now));
   const curiosityNeeded = missingSlots.filter((slot) => slot <= 4).length;
   const newsNeeded = missingSlots.filter((slot) => slot > 4).length;
   const curiosity = select(available, 'curiosity', curiosityNeeded, `${now.toISOString()}:curiosity:${localDay}`, now, editorialProfiles);
