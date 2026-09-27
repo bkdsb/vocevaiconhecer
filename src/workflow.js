@@ -43,11 +43,9 @@ export function repeatsRememberedTopic(candidate, memories) {
   });
 }
 export function freshEnoughForPublication(candidate, now = new Date()) {
-  const text = `${candidate.topic || ''} ${candidate.summary || ''}`.normalize('NFD').replace(/\p{M}/gu, '').toLocaleLowerCase('pt-BR');
-  const fastMoving = candidate.category === 'news' || /\b(decreto|election|eleicao|governo|government|proibir|proibicao|ban|regulacao|regulation|cassino|casino|mercado|market)\b/u.test(text);
-  if (!fastMoving) return true;
+  if (!requiresOneDayFreshness(candidate)) return true;
   const newest = Math.max(0, ...(candidate.sources || []).map((source) => Date.parse(source.publishedAt || '')).filter(Number.isFinite));
-  return newest > 0 && newest >= now.getTime() - 3 * 86_400_000 && newest <= now.getTime();
+  return newest > 0 && newest >= now.getTime() - 86_400_000 && newest <= now.getTime() + 5 * 60_000;
 }
 function safeErrorCode(error, fallback) { return /^[A-Z][A-Z0-9_]{1,63}$/.test(error?.code || '') ? error.code : fallback; }
 function shuffled(items, seed) { return [...items].sort((a, b) => hash(`${seed}:${a.id}`).localeCompare(hash(`${seed}:${b.id}`))); }
@@ -61,8 +59,8 @@ function editorialAppeal(candidate) {
   return hook + technical + engagement + concise;
 }
 function requiresOneDayFreshness(candidate) {
-  const text = `${candidate.topic || ''} ${candidate.summary || ''}`.toLocaleLowerCase('pt-BR');
-  return /(pol[ií]tic|governo|presidente|congresso|senado|deputad|elei[cç][aã]o|stf\b|supremo|partido|ministro|intelig[eê]ncia artificial|\bia\b|\bai\b|tecnolog|software|aplicativo|rob[oô]|chip|computador|smartphone|modelo de linguagem|chatbot)/iu.test(text);
+  const text = `${candidate.topic || ''} ${candidate.summary || ''} ${candidate.headline || ''}`.toLocaleLowerCase('pt-BR');
+  return /(pol[ií]tic|politic|governo|government|presidente|president|congresso|congress|senado|senate|deputad|elei[cç][aã]o|election|decreto|decree|regula[cç][aã]o|regulation|proibi[cç][aã]o|\bban\b|stf\b|supremo|partido|party\b|ministro|minister|intelig[eê]ncia artificial|artificial intelligence|\bia\b|\bai\b|tecnolog|technology|software|aplicativo|app\b|rob[oô]|robot|chip|computador|computer|smartphone|modelo de linguagem|language model|chatbot)/iu.test(text);
 }
 function withinOneDay(candidate, now = new Date()) {
   const dates = (candidate.sources || []).map((source) => source.publishedAt).filter(Boolean).map((value) => new Date(value)).filter((date) => Number.isFinite(date.getTime()));
@@ -223,6 +221,11 @@ export async function publishDue({ store, meta, config, now = new Date() }) {
   const due = store.listReady().filter((post) => post.status === 'scheduled' && post.scheduled_at && new Date(post.scheduled_at) <= now && store.getBatch(post.batch_id)?.status === 'scheduled');
   let published = 0;
   for (const post of due) {
+    if (requiresOneDayFreshness(post) && !withinOneDay(post, now)) {
+      store.rejectPost(post.id, 'FRESHNESS_EXPIRED');
+      store.addEvent('post_freshness_expired', { batchId: post.batch_id, postId: post.id });
+      continue;
+    }
     let imageBuffer;
     try { imageBuffer = await readFile(post.image_path); } catch { store.invalidatePost(post.id, 'Imagem não encontrada; requer revisão.'); continue; }
     if (!post.content_hash || contentHash({ ...post, imageBuffer }) !== post.content_hash) {

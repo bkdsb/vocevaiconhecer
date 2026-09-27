@@ -43,6 +43,15 @@ test('worker uses the persisted day reservation, including failed days, rather t
   }
 });
 
+test('worker does not retry an exhausted incomplete research pass every tick', async () => {
+  const result = await workerTick({
+    config: { ...config, generationEnabled: true }, now,
+    store: { dayCoverage: (day) => ({ day, batchId: 'reserved', status: 'blocked', total: 5, rejected: 3, warning: 'Pesquisa incompleta no last30days: faltam pautas.' }), batchForDay: never },
+    makeAI: never, makeBatch: never, log: never,
+  });
+  assert.equal(result.generation.skipped, 'coverage_complete');
+});
+
 test('enabled worker generates once, passes research dependency, and skips a subsequent tick', async () => {
   const days = new Map();
   const store = { batchForDay: (day) => days.get(day), latestBatch: never };

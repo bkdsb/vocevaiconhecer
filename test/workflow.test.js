@@ -82,6 +82,17 @@ test('pause actually blocks publication and resume moves reserved posts to futur
   assert.equal((await publishDue({ store: f.store, meta, config, now: dueTime })).published, 0);
 });
 
+test('politics and technology expire after 24h before Meta publication', async (t) => {
+  const f = await fixture(t);
+  await f.approve('post_1');
+  f.db.prepare('UPDATE posts SET topic=? WHERE id=?').run('Política do governo brasileiro', 'post_1');
+  let calls = 0;
+  await publishDue({ store: f.store, config, now: new Date('2026-09-24T13:08:00Z'), meta: { publishPhoto: async () => { calls += 1; return { id: 'x' }; } } });
+  assert.equal(calls, 0);
+  assert.equal(f.store.getPost('post_1').status, 'rejected');
+  assert.equal(f.store.getPost('post_1').last_error, 'FRESHNESS_EXPIRED');
+});
+
 test('overdue posts move forward without a catch-up publishing burst', async (t) => {
   const f = await fixture(t);
   await f.schedule();
@@ -287,12 +298,14 @@ test('topic memory treats AI aliases and recurring central themes as repeats', (
   assert.equal(repeatsRememberedTopic({ topic: 'Nova espécie encontrada no oceano', sources: [] }, memories), false);
 });
 
-test('fast-moving news and political claims require a source from the last three days', () => {
+test('politics and technology require a source from the last 24 hours while other topics may be older', () => {
   const current = new Date('2026-09-26T12:00:00Z');
-  const stale = { topic: 'Brazil plans decree to ban online casinos', category: 'curiosity', sources: [{ publishedAt: '2026-09-17T00:00:00Z' }] };
-  const fresh = { ...stale, sources: [{ publishedAt: '2026-09-25T00:00:00Z' }] };
+  const stale = { topic: 'Brazil plans decree to ban online casinos', category: 'curiosity', sources: [{ publishedAt: '2026-09-25T00:00:00Z' }] };
+  const fresh = { ...stale, sources: [{ publishedAt: '2026-09-26T00:30:00Z' }] };
   assert.equal(freshEnoughForPublication(stale, current), false);
   assert.equal(freshEnoughForPublication(fresh, current), true);
+  assert.equal(freshEnoughForPublication({ topic: 'Novo chip de inteligência artificial', category: 'news', sources: [{ publishedAt: '2026-09-25T00:00:00Z' }] }, current), false);
+  assert.equal(freshEnoughForPublication({ topic: 'Descoberta médica extraordinária', category: 'news', sources: [{ publishedAt: '2026-08-30T00:00:00Z' }] }, current), true);
   assert.equal(freshEnoughForPublication({ topic: 'Polvos resolvem labirintos', category: 'curiosity', sources: [{ publishedAt: '2020-01-01T00:00:00Z' }] }, current), true);
 });
 
