@@ -1,12 +1,22 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
 
 const COMMAND = /^(?:\/vvc\s+)?(?:status|aprovar\s+\S+(?:\s+\S+)?|rejeitar\s+\S+(?:\s+\S+)?|pausar|retomar)(?:\s+[^\n]*)?$/i;
+const LOCAL_TOKEN_FILE = resolve(dirname(fileURLToPath(import.meta.url)), '../../.bridge-token');
 
 function bridgeToken() {
   if (process.env.VVC_BRIDGE_TOKEN) return process.env.VVC_BRIDGE_TOKEN;
-  try { return readFileSync(process.env.VVC_BRIDGE_TOKEN_FILE || '/home/ubuntu/vocevaiconhecer/.bridge-token', 'utf8').trim(); } catch { return ''; }
+  const paths = [process.env.VVC_BRIDGE_TOKEN_FILE, LOCAL_TOKEN_FILE, '/home/ubuntu/vocevaiconhecer/.bridge-token'].filter(Boolean);
+  for (const path of paths) {
+    try {
+      const token = readFileSync(path, 'utf8').trim();
+      if (token) return token;
+    } catch { /* try next location */ }
+  }
+  return '';
 }
 
 function replyText(payload) {

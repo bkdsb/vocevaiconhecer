@@ -166,7 +166,7 @@ export function createOpenClawAIProvider(config, dependencies = {}) {
         if (objects.length !== 1) fail('AI_NOT_CONFIGURED', 'Não foi possível confirmar a configuração segura de imagens do OpenClaw.');
         return objects[0];
       };
-      const imageConfig = await readConfig('agents.defaults.imageGenerationModel');
+      const imageConfig = await readConfig('agents.defaults.imageModel');
       if (imageConfig.primary !== model || !Array.isArray(imageConfig.fallbacks) || imageConfig.fallbacks.length) fail('AI_NOT_CONFIGURED', 'O modelo de imagem deve ter fallbacks explicitamente vazios.');
       const modelsConfig = await readConfig('models');
       if (Object.keys(modelsConfig.providers?.openai || {}).length) fail('AI_NOT_CONFIGURED', 'Remova o override de API OpenAI para usar exclusivamente a assinatura Codex.');

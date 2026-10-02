@@ -258,7 +258,7 @@ export async function createDailyBatch({ config, store, ai, renderer = renderPos
     store.insertPost({ id: postId, batchId, slot, category: candidate.category, topic: candidate.topic, version, contentHash: digest, headline: copy.headline, caption: copy.caption, imagePath: outputPath, sources: candidate.sources, trend: candidate.trend, status: 'pending_approval' });
     const approvalCode = store.approvalCode(postId);
     if (!approvalCode) throw Object.assign(new Error('Não foi possível criar o código sequencial da prévia.'), { code: 'APPROVAL_CODE_FAILED' });
-    try { await messenger?.send?.({ text: `${copy.caption}\n\nCódigo desta prévia: *${approvalCode}*\nResponda *APROVAR ${approvalCode}* ou *REJEITAR ${approvalCode}*.`, imagePath: outputPath }); }
+    try { await messenger?.send?.({ text: `${copy.caption}\n\n*Aprovar #${approvalCode}?*\nResponda *APROVAR #${approvalCode}* ou *REJEITAR #${approvalCode}*.`, imagePath: outputPath }); }
     catch (error) { store.addEvent('preview_delivery_failed', { batchId, postId, code: safeErrorCode(error, 'DELIVERY_FAILED') }); }
   }
   if (store.getBatch(batchId).status !== 'paused') {
@@ -329,7 +329,9 @@ export async function handleApprovalCommand({ text, sender, config, store, batch
   if (!config.allowedSenders.includes(sender)) { const error = new Error('Remetente não autorizado.'); error.code = 'UNAUTHORIZED_SENDER'; throw error; }
   const value = String(text).trim(); const parts = value.split(/\s+/); const command = parts[0].toUpperCase();
   if (command === 'STATUS' || command === '/VVC' && parts[1]?.toUpperCase() === 'STATUS') return { text: JSON.stringify(store.latestBatch() || { status: 'none' }) };
-  const verb = command === '/VVC' ? parts[1]?.toUpperCase() : command; const id = command === '/VVC' ? parts[2] : parts[1];
+  const verb = command === '/VVC' ? parts[1]?.toUpperCase() : command;
+  const rawId = command === '/VVC' ? parts[2] : parts[1];
+  const id = rawId?.replace(/^#/, '');
   const sequentialCode = /^0\d{3,}$/.test(id || '') ? id : null;
   const code = /^([a-f0-9]{8,16})$/i.test(id || '') ? id.toLowerCase() : null;
   const resolvePost = () => {
@@ -359,7 +361,7 @@ export async function handleApprovalCommand({ text, sender, config, store, batch
     const post = store.approvePost(resolvedId, now.toISOString(), postBefore);
     if (!post) throw Object.assign(new Error('Post já não está aguardando aprovação.'), { code: 'POST_NOT_PENDING' });
     const scheduled = scheduleBatch({ store, config, batchId: post.batch_id, now });
-    const reference = sequentialCode || code?.toUpperCase() || numericSlot || postBefore.slot;
+    const reference = sequentialCode ? `#${sequentialCode}` : (code?.toUpperCase() || numericSlot || postBefore.slot);
     return { text: scheduled.scheduled ? `✅ Prévia ${reference} aprovada. As prévias aprovadas estão agendadas.` : `✅ Prévia ${reference} aprovada.` };
   }
   if (verb === 'REJEITAR' && id) {
@@ -367,7 +369,8 @@ export async function handleApprovalCommand({ text, sender, config, store, batch
     const target = resolvePost();
     const post = target ? store.rejectPost(target.id) : null;
     if (!post) throw Object.assign(new Error('Post não encontrado.'), { code: 'POST_NOT_FOUND' });
-    return { text: `❌ Prévia ${sequentialCode || code?.toUpperCase() || numericSlot || post.slot} rejeitada. Vou buscar outro tema para esse espaço e te enviar uma nova prévia para aprovação.` };
+    const reference = sequentialCode ? `#${sequentialCode}` : (code?.toUpperCase() || numericSlot || post.slot);
+    return { text: `❌ Prévia ${reference} rejeitada. Vou buscar outro tema para esse espaço e te enviar uma nova prévia para aprovação.` };
   }
   const targetBatchId = id || batchId || store.latestBatch()?.id;
   const targetBatch = targetBatchId && store.getBatch(targetBatchId);

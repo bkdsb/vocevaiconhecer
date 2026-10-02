@@ -73,8 +73,10 @@ test('sequential zero-padded preview numbers resolve globally without depending 
   const secondCode = f.store.approvalCode('post_2');
   assert.match(firstCode, /^0\d{3,}$/);
   assert.notEqual(firstCode, secondCode);
-  await f.command(`APROVAR ${firstCode}`, approvalTime);
-  await f.command(`REJEITAR ${secondCode}`, approvalTime);
+  const approved = await f.command(`APROVAR #${firstCode}`, approvalTime);
+  const rejected = await f.command(`REJEITAR #${secondCode}`, approvalTime);
+  assert.match(approved.text, new RegExp(`#${firstCode}`));
+  assert.match(rejected.text, new RegExp(`#${secondCode}`));
   assert.equal(f.store.getPost('post_1').status, 'scheduled');
   assert.equal(f.store.getPost('post_2').status, 'rejected');
 });

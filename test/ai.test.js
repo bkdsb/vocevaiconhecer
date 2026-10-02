@@ -19,7 +19,7 @@ const raster = () => sharp({ create: { width: 32, height: 48, channels: 3, backg
 const imagePreflight = (args) => {
   if (args[0] === 'models' && args[1] === 'auth') return { profiles: [{ provider: 'openai', type: 'oauth' }] };
   if (args[0] !== 'config') return null;
-  return args[2] === 'agents.defaults.imageGenerationModel' ? { primary: 'openai/gpt-image-2', fallbacks: [] } : { providers: {} };
+  return args[2] === 'agents.defaults.imageModel' ? { primary: 'openai/gpt-image-2', fallbacks: [] } : { providers: {} };
 };
 
 test('Cloudflare remains explicit opt-in and rejects unapproved models', () => {
@@ -239,7 +239,7 @@ test('native image preflight refuses API credentials or fallback routes before g
     const execFileImpl = (_bin, args, _options, callback) => {
       let response = imagePreflight(args);
       if (args[0] === 'infer') generated = true;
-      if (scenario === 'fallback' && args[2] === 'agents.defaults.imageGenerationModel') response = { primary: 'openai/gpt-image-2', fallbacks: ['other/image'] };
+      if (scenario === 'fallback' && args[2] === 'agents.defaults.imageModel') response = { primary: 'openai/gpt-image-2', fallbacks: ['other/image'] };
       if (scenario === 'api-override' && args[2] === 'models') response = { providers: { openai: { api: 'openai-responses' } } };
       if (args[0] === 'models' && scenario === 'api-auth') response = { profiles: [{ provider: 'openai', type: 'api_key' }] };
       if (args[0] === 'models' && scenario === 'missing-auth') response = { profiles: [] };
