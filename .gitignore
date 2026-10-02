@@ -12,6 +12,7 @@ client_secret*.json
 # Dependencies and generated files
 node_modules/
 .venv/
+.venv-scrapling/
 venv/
 __pycache__/
 *.py[cod]
