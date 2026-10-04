@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, mkdtemp } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { validateEditorialDecisions } from './editorial-selection.js';
 
-const NEWS_WORDS = /\b(ai|ia|tecnologia|technology|tech|medicina|medicine|science|research|breakthrough|pesquisa|descoberta|inovação|innovation|robô|robot|computador|saúde|nasa|vacina|tratamento|chip|neural|quantum|energia)\b|cient[íi]fic|m[ée]dic|astronom/iu;
+const NEWS_WORDS = /\b(ai|ia|tecnologia|technology|tech|medicina|medicine|science|research|breakthrough|pesquisa|descoberta|inovação|innovation|robô|robot|computador|saúde|nasa|vacina|tratamento|chip|neural|quantum|energia|guerra|war|military|army|missile|ceasefire)\b|cient[íi]fic|m[ée]dic|astronom|pol[ií]tic|militar|bombarde/iu;
 const COUNTER_NAMES = /^(score|points|likes|reposts|retweets|shares|comments|num_comments|views|view_count|like_count|comment_count|postCount|uniqueAuthors|upvotes|votes|favorites)$/i;
 
 function idFor(topic, url = '') { return createHash('sha256').update(`${topic}\0${url}`).digest('hex').slice(0, 20); }
@@ -242,7 +242,17 @@ export async function researchTopics(config, { now = new Date(), clock = () => n
   const credentialKeys = ['OPENAI_API_KEY', 'XAI_API_KEY', 'GOOGLE_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_GENAI_API_KEY', 'SCRAPECREATORS_API_KEY', 'APIFY_API_TOKEN', 'AUTH_TOKEN', 'CT0', 'BSKY_HANDLE', 'BSKY_APP_PASSWORD', 'TRUTHSOCIAL_TOKEN', 'BRAVE_API_KEY', 'EXA_API_KEY', 'SERPER_API_KEY', 'OPENROUTER_API_KEY', 'PERPLEXITY_API_KEY', 'PARALLEL_API_KEY', 'XQUIK_API_KEY', 'XIAOHONGSHU_API_BASE', 'GITHUB_TOKEN', 'BRIGHTDATA_API_KEY', 'X_BEARER_TOKEN', 'LAST30DAYS_API_KEY', 'LAST30DAYS_API_BASE'];
   const env = { ...Object.fromEntries(credentialKeys.map((key) => [key, ''])), LAST30DAYS_MEMORY_DIR: config.last30daysDir, LAST30DAYS_CONFIG_DIR: '', LAST30DAYS_SKIP_KEYCHAIN: '1', LAST30DAYS_TRUST_PROJECT_CONFIG: '0', LAST30DAYS_CORPUS_DIRS: '', LAST30DAYS_CORPUS_IN_EXPORT: '0', FROM_BROWSER: 'off' };
   const warnings = [];
-  const run = async (args) => { onProgress({ type: 'research_started', args }); const result = await runImpl({ pythonBin: config.pythonBin, scriptPath, args, timeoutMs: config.researchTimeoutMs, env }); onProgress({ type: 'research_finished' }); return parseJsonOutput(result.stdout); };
+  const run = async (args) => {
+    // The engine stops after 101 duplicate output filenames. Give each search
+    // its own output directory while preserving the shared research cache.
+    const saveDir = await mkdtemp(resolve(config.last30daysDir, 'run-'));
+    const searchArgs = [...args];
+    searchArgs[searchArgs.indexOf('--save-dir') + 1] = saveDir;
+    onProgress({ type: 'research_started', args: searchArgs });
+    const result = await runImpl({ pythonBin: config.pythonBin, scriptPath, args: searchArgs, timeoutMs: config.researchTimeoutMs, env });
+    onProgress({ type: 'research_finished' });
+    return parseJsonOutput(result.stdout);
+  };
   // Use overlapping discovery lanes. A single provider or niche can degrade
   // without starving the daily queue, while mergeCandidates still collapses
   // the same story found by multiple searches.
@@ -257,6 +267,7 @@ export async function researchTopics(config, { now = new Date(), clock = () => n
     { label: 'curiosity:internet-culture-7d', categoryHint: 'curiosity', args: ['viral internet culture unusual human story impressive achievement trending this week', '--emit=json', '--json-profile=raw', '--days=7', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
     { label: 'news:technology-1d', categoryHint: 'news', args: ['AI technology new capability launch breakthrough major impact viral surprising', '--emit=json', '--json-profile=raw', '--days=1', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
     { label: 'news:politics-brazil-1d', categoryHint: 'news', args: ['Brazil politics controversy decision statement viral debate divided opinions today', '--emit=json', '--json-profile=raw', '--days=1', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
+    { label: 'news:military-war-1d', categoryHint: 'news', args: ['military war armed conflict ceasefire missile defense breaking news today guerra militar conflito últimas 24 horas', '--emit=json', '--json-profile=raw', '--days=1', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
     { label: 'news:science-medicine-7d', categoryHint: 'news', args: ['science medicine cure treatment breakthrough extraordinary discovery controversial research unprecedented human impact', '--emit=json', '--json-profile=raw', '--days=7', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
     { label: 'news:environment-space-7d', categoryHint: 'news', args: ['climate environment space astronomy energy discovery major event new study this week', '--emit=json', '--json-profile=raw', '--days=7', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
     { label: 'news:brazil-world-1d', categoryHint: 'news', args: ['Brazil world breaking news unusual decision record discovery today', '--emit=json', '--json-profile=raw', '--days=1', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
@@ -267,7 +278,7 @@ export async function researchTopics(config, { now = new Date(), clock = () => n
     : Promise.resolve({ profiles: [], warnings: [] });
   const completed = await Promise.allSettled(jobs.map(async (job) => ({ job, report: await run(job.args) })));
   const reports = [];
-  for (const result of completed) {
+  for (const [index, result] of completed.entries()) {
     if (result.status === 'fulfilled') {
       const report = { ...result.value.report, categoryHint: result.value.job.categoryHint, searchLabel: result.value.job.label };
       reports.push(report);
@@ -277,7 +288,7 @@ export async function researchTopics(config, { now = new Date(), clock = () => n
         if (status && !['ok', 'no-results', 'skipped-unconfigured'].includes(status)) warnings.push({ code: 'RESEARCH_COVERAGE_INCOMPLETE', search: report.searchLabel, source, status });
       }
     }
-    else warnings.push({ code: result.reason?.code || 'RESEARCH_FAILED', message: result.reason?.message || 'Pesquisa indisponível.' });
+    else warnings.push({ code: result.reason?.code || 'RESEARCH_FAILED', search: jobs[index].label, message: result.reason?.message || 'Pesquisa indisponível.' });
   }
   let scrapling = { profiles: [], warnings: [] };
   try { scrapling = await scraplingPromise; }
@@ -286,7 +297,21 @@ export async function researchTopics(config, { now = new Date(), clock = () => n
   const inspirationProfiles = (scrapling.profiles || []).flatMap((profile) => (profile.topics || []).slice(0, 20).map((topic) => ({
     topic, headline: topic, category: profile.category === 'news' ? 'news' : 'curiosity', score: 0.35, inspirationSource: profile.source, inspirationUrl: profile.url,
   }))).slice(0, 160);
+  
+  // Transformar inspirações do Facebook em Candidatos Reais (Insights Virais)
+  const scraplingCandidates = inspirationProfiles.map(p => ({
+    id: 'fb-' + Buffer.from(p.headline).toString('base64').substring(0, 10),
+    headline: p.headline,
+    category: p.category,
+    sourceDate: now.toISOString(),
+    retrievedAt: now.toISOString(),
+    sources: [{ url: p.inspirationUrl, status: 'ok', title: 'Facebook Page Insight' }],
+    claims: [{ text: p.headline, sourceIds: [] }],
+    score: 0.95 // Peso máximo para forçar o sistema a usar esses posts
+  }));
   const groups = reports.map((report) => normalizeReport(report, now, 15));
+  groups.unshift(scraplingCandidates); // Adiciona as páginas do Facebook como o grupo principal
+
   const unique = mergeCandidates(groups, now, 15);
   const countCategories = (items) => ({ curiosity: items.filter((candidate) => candidate.category === 'curiosity').length, news: items.filter((candidate) => candidate.category === 'news').length });
   const discoveryCounts = countCategories(unique);
@@ -325,7 +350,7 @@ export async function researchTopics(config, { now = new Date(), clock = () => n
   if (eligible.length > candidates.length) warnings.push({ code: 'CANDIDATES_TRUNCATED', available: eligible.length, retained: candidates.length });
   if (counts.verified.curiosity < 4) warnings.push({ code: 'INSUFFICIENT_CURIOSITIES', available: counts.verified.curiosity, discovered: counts.discoveredByCategory.curiosity, requested: 4 });
   if (counts.verified.news < 4) warnings.push({ code: 'INSUFFICIENT_NEWS', available: counts.verified.news, discovered: counts.discoveredByCategory.news, requested: 4 });
-  return { candidates, counts, editorialDecisions, inspirationProfiles, coverage: reports.map((report) => ({ search: report.searchLabel, sources: report.source_status || report.feeds || {} })), warnings, generatedAt: now.toISOString(), windowDays: 15, engine: 'last30days+scrapling' };
+  return { candidates, counts, editorialDecisions, inspirationProfiles, coverage: reports.map((report) => ({ search: report.searchLabel, sources: report.source_status || report.feeds || {} })), warnings, generatedAt: now.toISOString(), windowDays: 15, freshnessPolicy: { urgentMaxAgeHours: 24, urgentTopics: ['politics', 'ai', 'technology', 'military', 'war'], otherTopicsMaxAgeDays: null, otherTopicsDiscoveryDays: 30, checkedBeforeGenerationAndPublication: true }, engine: 'last30days+scrapling' };
 }
 
 export { normalizeReport };
