@@ -57,3 +57,62 @@ test('interrupted or inconclusive Meta writes are unknown and never retried', as
     assert.equal(calls, 1);
   }
 });
+
+test('scheduled photo creates a real feed entry with attached media and returns its post ID', async () => {
+  const calls = [];
+  const meta = createMetaProvider(cfg, { now: () => new Date('2026-10-04T12:00:00Z'), fetchImpl: async (url, request) => {
+    calls.push({ path: url.pathname, body: request.body });
+    return response(calls.length === 1 ? { id: '12345' } : { id: '123_67890' });
+  } });
+  const result = await meta.publishPhoto({ pageId: '123', pageToken: 'page-token', imageBuffer: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), caption: 'Approved content', published: false, scheduledPublishTime: '2026-10-04T13:00:00Z' });
+  assert.deepEqual(result, { id: '12345', postId: '123_67890' });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].path, '/v26.0/123/photos');
+  assert.equal(calls[0].body.get('published'), 'false');
+  assert.equal(calls[0].body.get('scheduled_publish_time'), null);
+  assert.equal(calls[1].path, '/v26.0/123/feed');
+  assert.deepEqual(JSON.parse(calls[1].body.get('attached_media')), [{ media_fbid: '12345' }]);
+  assert.equal(calls[1].body.get('unpublished_content_type'), 'SCHEDULED');
+  assert.equal(calls[1].body.get('scheduled_publish_time'), '1791118800');
+});
+
+test('invalid schedules fail before any photo upload', async () => {
+  const meta = createMetaProvider(cfg, { now: () => new Date('2026-10-04T12:00:00Z'), fetchImpl: async () => assert.fail('invalid date must not write') });
+  for (const at of ['', 'invalid', '2026-10-04T12:09:59Z', '2026-11-05T12:00:00Z']) {
+    await assert.rejects(meta.publishPhoto({ pageId: '123', pageToken: 'page-token', caption: 'Approved content', scheduledPublishTime: at }), { code: 'META_INVALID_INPUT' });
+  }
+});
+
+test('a timeout creating scheduled feed is unknown and preserves uploaded photo ID without retrying', async () => {
+  let calls = 0;
+  const meta = createMetaProvider(cfg, { now: () => new Date('2026-10-04T12:00:00Z'), fetchImpl: async () => {
+    calls += 1;
+    if (calls === 1) return response({ id: '12345' });
+    throw new Error('network-private-details');
+  } });
+  await assert.rejects(meta.publishPhoto({ pageId: '123', pageToken: 'page-token', imageBuffer: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), caption: 'Approved content', scheduledPublishTime: '2026-10-04T13:00:00Z' }), (error) => error.code === 'PUBLICATION_UNKNOWN' && error.photoId === '12345' && !error.message.includes('private'));
+  assert.equal(calls, 2);
+});
+
+test('scheduled post reads verify timestamps and follow only validated cursors', async () => {
+  let calls = 0;
+  const meta = createMetaProvider(cfg, { fetchImpl: async (url) => {
+    calls += 1;
+    if (calls === 1) return response({ data: [{ id: '123_10', scheduled_publish_time: 1791118800, is_published: false }], paging: { next: 'https://graph.facebook.com/v26.0/123/scheduled_posts?after=next', cursors: { after: 'next' } } });
+    assert.equal(url.searchParams.get('after'), 'next');
+    return response({ data: [{ id: '123_11', scheduled_publish_time: 1791122400, is_published: false }] });
+  } });
+  assert.deepEqual(await meta.listScheduledPosts({ pageId: '123', pageToken: 'page-token' }), [
+    { id: '123_10', scheduledAt: '2026-10-04T13:00:00.000Z', isPublished: false },
+    { id: '123_11', scheduledAt: '2026-10-04T14:00:00.000Z', isPublished: false },
+  ]);
+  const unsafe = createMetaProvider(cfg, { fetchImpl: async () => response({ data: [], paging: { next: 'https://untrusted.test/data?after=next', cursors: { after: 'next' } } }) });
+  await assert.rejects(unsafe.listScheduledPosts({ pageId: '123', pageToken: 'page-token' }), { code: 'META_INVALID_RESPONSE' });
+});
+
+test('post status requires explicit publication proof instead of an object ID alone', async () => {
+  const missing = createMetaProvider(cfg, { fetchImpl: async () => response({ id: '123_456' }) });
+  await assert.rejects(missing.getPostStatus({ postId: '123_456', pageToken: 'page-token' }), { code: 'META_INVALID_RESPONSE' });
+  const published = createMetaProvider(cfg, { fetchImpl: async () => response({ id: '123_456', is_published: true, created_time: '2026-10-04T13:00:00+0000' }) });
+  assert.equal((await published.getPostStatus({ postId: '123_456', pageToken: 'page-token' })).isPublished, true);
+});

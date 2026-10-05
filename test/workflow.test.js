@@ -6,12 +6,77 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDatabase, createStore } from '../src/db.js';
 import { createMetaProvider } from '../src/providers/meta.js';
-import { contentHash, createDailyBatch, freshEnoughForPublication, handleApprovalCommand, publishDue, repeatsHistoricalWinnerSubject, repeatsRememberedTopic, scheduleBatch, storyArchetypes } from '../src/workflow.js';
+import { compactScheduledQueue, contentHash, createDailyBatch, expireStalePosts, freshEnoughForPublication, handleApprovalCommand, publishDue, repeatsHistoricalWinnerSubject, repeatsRememberedTopic, scheduleBatch, storyArchetypes, syncSchedulesWithMeta } from '../src/workflow.js';
 
 const sender = '+5511999999999';
 const approvalTime = new Date('2026-09-24T10:00:00Z');
 const dueTime = new Date('2026-09-24T13:08:00Z');
 const config = { allowedSenders: [sender], approvalRequired: true, timezone: 'America/Sao_Paulo', metaPublishEnabled: true, metaPageId: '123', metaPageToken: 'test-token' };
+
+test('concurrent native scheduling uses one durable claim and never reuploads a photo-only result', async (t) => {
+  const f = await fixture(t); await f.approve('post_1');
+  const second = await f.connect(); let writes = 0;
+  const meta = { publishPhoto: async () => { writes += 1; return { id: '12345', postId: null }; } };
+  await Promise.all([syncSchedulesWithMeta({ store: f.store, config, meta, now: approvalTime }), syncSchedulesWithMeta({ store: second.store, config, meta, now: approvalTime })]);
+  await syncSchedulesWithMeta({ store: f.store, config, meta, now: approvalTime });
+  assert.equal(writes, 1);
+  assert.equal(f.store.getPost('post_1').meta_schedule_state, 'submitted');
+  assert.equal((await publishDue({ store: f.store, config, meta, now: dueTime })).published, 0);
+  assert.equal(f.store.getPost('post_1').status, 'scheduled');
+});
+
+test('ambiguous schedule failures and interrupted claims remain blocked across restart', async (t) => {
+  const f = await fixture(t); await f.approve('post_1'); await f.approve('post_2');
+  const first = f.store.getPost('post_1');
+  assert.equal(f.store.claimMetaSchedule(first.id, first.scheduled_at, first), true);
+  let writes = 0;
+  const meta = { publishPhoto: async () => { writes += 1; throw Object.assign(new Error('private network details'), { code: 'PUBLICATION_UNKNOWN', photoId: '12345' }); } };
+  await syncSchedulesWithMeta({ store: f.store, config, meta, now: approvalTime });
+  const second = await f.connect();
+  await syncSchedulesWithMeta({ store: second.store, config, meta, now: approvalTime });
+  assert.equal(writes, 1);
+  assert.equal(second.store.getPost('post_1').meta_schedule_state, 'scheduling');
+  assert.equal(second.store.getPost('post_2').meta_schedule_state, 'unknown');
+  assert.equal(second.store.getPost('post_2').meta_photo_id, '12345');
+  assert.equal(second.store.getPost('post_2').last_error, 'PUBLICATION_UNKNOWN');
+  await publishDue({ store: second.store, config, meta, now: dueTime });
+  assert.equal(writes, 1);
+});
+
+test('native schedule is confirmed remotely, preserved through queue compaction and publication requires proof', async (t) => {
+  const f = await fixture(t); await f.approve('post_1');
+  const at = f.store.getPost('post_1').scheduled_at; let writes = 0; let published = false;
+  const meta = {
+    publishPhoto: async () => { writes += 1; return { id: '12345', postId: '123_67890' }; },
+    getPostStatus: async () => ({ id: '123_67890', isPublished: published, scheduledAt: at }),
+  };
+  const first = await syncSchedulesWithMeta({ store: f.store, config, meta, now: approvalTime });
+  assert.equal(first.confirmed, 1);
+  assert.equal(f.store.getPost('post_1').meta_schedule_state, 'confirmed');
+  assert.deepEqual(compactScheduledQueue({ store: f.store, config, now: new Date('2026-09-24T14:00:00Z') }), []);
+  f.store.reschedule('post_1', '2026-09-25T13:00:00Z');
+  assert.equal(f.store.getPost('post_1').scheduled_at, at);
+  assert.equal((await publishDue({ store: f.store, config, meta, now: dueTime })).published, 0);
+  assert.equal(f.store.getPost('post_1').status, 'scheduled');
+  published = true;
+  assert.equal((await publishDue({ store: f.store, config, meta, now: dueTime })).published, 1);
+  assert.equal(f.store.getPost('post_1').status, 'published');
+  assert.equal(writes, 1);
+});
+
+test('native IDs prevent silent local expiry, rejection or reapproval and mismatched schedule stays unconfirmed', async (t) => {
+  const f = await fixture(t); await f.approve('post_1');
+  const meta = { publishPhoto: async () => ({ id: '12345', postId: '123_67890' }), getPostStatus: async () => ({ id: '123_67890', isPublished: false, scheduledAt: '2026-09-25T13:00:00Z' }) };
+  await syncSchedulesWithMeta({ store: f.store, config, meta, now: approvalTime });
+  assert.equal(f.store.getPost('post_1').last_error, 'META_SCHEDULE_TIME_MISMATCH');
+  assert.equal(f.store.getPost('post_1').meta_schedule_state, 'unknown');
+  f.db.prepare("UPDATE posts SET category='news',topic='Política hoje' WHERE id='post_1'").run();
+  assert.deepEqual(expireStalePosts({ store: f.store, config, now: new Date('2026-10-04T12:00:00Z') }), []);
+  await assert.rejects(f.command(`REJEITAR ${f.store.getPost('post_1').version.slice(0, 8)}`), { code: 'META_REVIEW_REQUIRED' });
+  assert.equal(f.store.rejectPost('post_1'), null);
+  f.db.prepare("UPDATE posts SET status='pending_approval',scheduled_at=NULL WHERE id='post_1'").run();
+  await assert.rejects(f.approve('post_1'), { code: 'META_REVIEW_REQUIRED' });
+});
 
 async function fixture(t) {
   const dir = await mkdtemp(join(tmpdir(), 'vvc-workflow-'));
@@ -67,6 +132,29 @@ test('unique preview codes approve and reject the intended post across concurren
   assert.equal(f.store.getPost('post_2').status, 'rejected');
 });
 
+test('future production batches fill today first, then spill into tomorrow after eight reserved slots', async (t) => {
+  const f = await fixture(t);
+  f.db.prepare("UPDATE batches SET local_day='2026-09-26' WHERE id='batch_test'").run();
+  await f.schedule();
+  const times = f.store.getBatch('batch_test').posts.map(p => p.scheduled_at);
+  assert.ok(times.every(at => at.startsWith('2026-09-24')));
+  f.store.createBatch({id:'next_batch', localDay:'2026-09-27'});
+  const post = f.store.getPost('post_1');
+  f.store.insertPost({id:'extra',batchId:'next_batch',slot:1,category:'curiosity',topic:'extra',headline:post.headline,caption:post.caption,sources:post.sources,trend:{},imagePath:f.imagePath,version:post.version,contentHash:post.content_hash});
+  await f.approve('extra');
+  assert.match(f.store.getPost('extra').scheduled_at,/^2026-09-25T10:00:00/);
+});
+
+test('queue compaction fills gaps without changing published or imminent posts', async (t) => {
+  const f = await fixture(t);
+  await f.approve('post_1'); await f.approve('post_2');
+  f.store.reschedule('post_2','2026-09-27T11:00:00-03:00');
+  const changes=compactScheduledQueue({store:f.store,config,now:new Date('2026-09-24T12:58:00Z')});
+  assert.deepEqual(changes.map(p=>p.postId),['post_2']);
+  assert.equal(f.store.getPost('post_1').scheduled_at,'2026-09-24T10:00:00-03:00');
+  assert.equal(f.store.getPost('post_2').scheduled_at,'2026-09-24T11:00:00-03:00');
+});
+
 test('sequential zero-padded preview numbers resolve globally without depending on slots', async (t) => {
   const f = await fixture(t);
   const firstCode = f.store.approvalCode('post_1');
@@ -90,6 +178,24 @@ test('approval rejects an image changed since preview, but allows the restored r
   await f.approve('post_1');
   assert.equal(f.store.getPost('post_1').status, 'scheduled');
   assert.match(f.store.getPost('post_1').scheduled_at, /T10:00:00-03:00$/);
+});
+
+test('aprovo is idempotent: a repeated code confirms the same schedule without another approval', async (t) => {
+  const f = await fixture(t);
+  const code = f.store.approvalCode('post_1');
+  await f.command(`aprovo ${code}`, approvalTime);
+  const at = f.store.getPost('post_1').scheduled_at;
+  const reply = await f.command(`aprovo #${code}`, dueTime);
+  assert.match(reply.text, /já aprovada e agendada/);
+  assert.equal(f.store.getPost('post_1').scheduled_at, at);
+  assert.equal(f.db.prepare("SELECT count(*) AS n FROM events WHERE type='post_approved' AND post_id='post_1'").get().n, 1);
+});
+
+test('urgent posts are refused at approval if the next slot is beyond 24 hours', async (t) => {
+  const f = await fixture(t);
+  f.db.prepare('UPDATE posts SET topic=?,sources_json=? WHERE id=?').run('Missile attack during armed conflict', JSON.stringify([{ publishedAt: '2026-09-23T12:00:00Z' }]), 'post_1');
+  await assert.rejects(f.command(`aprovo ${f.store.approvalCode('post_1')}`, approvalTime), { code: 'FRESHNESS_EXPIRED' });
+  assert.equal(f.store.getPost('post_1').status, 'pending_approval');
 });
 
 test('pause actually blocks publication and resume moves reserved posts to future slots', async (t) => {
@@ -125,6 +231,20 @@ test('overdue posts move forward without a catch-up publishing burst', async (t)
   const times = f.store.getBatch('batch_test').posts.map((post) => post.scheduled_at);
   assert.equal(new Set(times).size, 8);
   assert.ok(times.every((at) => new Date(at) > now));
+});
+
+test('expiration frees stale previews and future urgent slots while preserving evergreen approvals', async (t) => {
+  const f = await fixture(t);
+  await f.approve('post_1');
+  await f.approve('post_2');
+  const oldSources = JSON.stringify([{ publishedAt: '2026-09-22T10:00:00Z' }]);
+  for (const id of ['post_1', 'post_3']) f.db.prepare('UPDATE posts SET topic=?,sources_json=? WHERE id=?').run('Guerra e conflito militar', oldSources, id);
+  const expired = expireStalePosts({ store: f.store, config, now: approvalTime });
+  assert.deepEqual(expired.map(p => p.id), ['post_1', 'post_3']);
+  assert.equal(f.store.getPost('post_1').scheduled_at, null);
+  assert.equal(f.store.getPost('post_3').last_error, 'FRESHNESS_EXPIRED');
+  assert.equal(f.store.getPost('post_2').status, 'scheduled');
+  assert.deepEqual(expireStalePosts({ store: f.store, config, now: approvalTime }), []);
 });
 
 test('rejected and restored invalidated posts can be explicitly reapproved inside a scheduled batch', async (t) => {
@@ -371,6 +491,17 @@ test('politics and technology require a source from the last 24 hours while othe
   assert.equal(freshEnoughForPublication({ topic: 'Novo chip de inteligência artificial', category: 'news', sources: [{ publishedAt: '2026-09-25T00:00:00Z' }] }, current), false);
   assert.equal(freshEnoughForPublication({ topic: 'Descoberta médica extraordinária', category: 'news', sources: [{ publishedAt: '2026-08-30T00:00:00Z' }] }, current), true);
   assert.equal(freshEnoughForPublication({ topic: 'Polvos resolvem labirintos', category: 'curiosity', sources: [{ publishedAt: '2020-01-01T00:00:00Z' }] }, current), true);
+});
+
+test('military, war and AI names require dated evidence within the exact 24h window', () => {
+  const now = new Date('2026-10-03T12:00:00Z');
+  for (const topic of ['Guerra na Ucrânia', 'Exército anuncia operação', 'Novo míssil de defesa naval', 'Army signs ceasefire', 'Military development', 'OpenAI releases GPT', 'Instalação nuclear da Coreia do Norte']) {
+    for (const date of [null, '2026-10-02T11:59:59Z', '2026-10-03T12:00:01Z']) {
+      assert.equal(freshEnoughForPublication({ topic, sources: [{ publishedAt: date }] }, now), false, topic);
+    }
+    assert.equal(freshEnoughForPublication({ topic, sources: [{ publishedAt: '2026-10-02T12:00:00Z' }] }, now), true, topic);
+  }
+  assert.equal(freshEnoughForPublication({ topic: 'Como polvos mudam de cor', sources: [{ publishedAt: '2019-01-01' }] }, now), true);
 });
 
 test('a generated 4+4 batch needs explicit approval even when approvalRequired=false', async (t) => {

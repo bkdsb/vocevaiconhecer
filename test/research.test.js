@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { normalizeReport, researchTopics, verifyCandidates } from '../src/research.js';
@@ -25,8 +25,71 @@ async function check(item, assessment, options = {}) {
 async function research(t, options = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'vvc-research-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  return researchTopics({ last30daysDir: dir, pythonBin: 'python3', researchTimeoutMs: 1_000 }, { now, clock: () => now, ...options });
+  const { config = {}, ...adapters } = options;
+  return researchTopics({ last30daysDir: dir, pythonBin: 'python3', researchTimeoutMs: 1_000, ...config }, { now, clock: () => now, ...adapters });
 }
+
+test('Facebook post objects retain their text, evidence and distinct identity and rank before complementary feeds', async (t) => {
+  const result = await research(t, {
+    config: { scraplingSourcesEnabled: true }, relaxed: true,
+    scraplingImpl: async () => ({ profiles: [{ source: 'Fatos Sobrenaturais', url: 'https://www.facebook.com/FatoSobrenaturais', kind: 'facebook', category: 'curiosity', topics: [
+      { text: 'Um peixe extraordinário consegue andar pela terra firme', metrics: { likes: 10, score: 9999999 } },
+      { text: 'Um animal misterioso brilha quando a noite chega', metrics: { likes: 100, comments: 20, score: 1 } },
+      'Uma planta fascinante fecha suas folhas ao receber um toque', {}, null,
+    ] }], warnings: [] }),
+    runImpl: async () => ({ stdout: JSON.stringify({ results: [flat()] }), stderr: '' }),
+  });
+  const fb = result.candidates.filter((item) => item.raw.engine === 'scrapling');
+  assert.equal(fb.length, 3);
+  assert.equal(new Set(fb.map((item) => item.id)).size, 3);
+  assert.equal(new Set(fb.map((item) => item.sources[0].id)).size, 3);
+  assert.equal(result.candidates[0].topic, 'Um animal misterioso brilha quando a noite chega');
+  for (const item of fb) {
+    assert.equal(typeof item.topic, 'string');
+    assert.equal(item.sources[0].text, item.topic);
+    assert.equal(item.sources[0].url, 'https://facebook.com/FatoSobrenaturais');
+    assert.equal(item.sources[0].publishedAt, null);
+    assert.equal(item.trend.hasRecentSignal, false);
+    assert.equal(item.sources[0].metrics.score, undefined);
+    assert.equal(item.publishable, true);
+  }
+});
+
+test('urgent Facebook stories require a publication date within 24 hours even in relaxed production', async (t) => {
+  const result = await research(t, {
+    config: { scraplingSourcesEnabled: true }, relaxed: true,
+    scraplingImpl: async () => ({ profiles: [{ source: 'Referência', url: 'https://facebook.com/reference', kind: 'facebook', topics: [
+      { text: 'OpenAI anuncia novidade sem data de publicação' },
+      { text: 'O governo anuncia decisão antiga', publishedAt: '2026-09-22T12:00:00Z' },
+      { text: 'Novo cessar fogo foi confirmado hoje', publishedAt: '2026-09-24T10:00:00Z' },
+    ] }] }),
+    runImpl: async () => ({ stdout: '{"results":[]}', stderr: '' }),
+  });
+  assert.equal(result.candidates.length, 3);
+  assert.equal(result.candidates.filter((item) => item.publishable).length, 1);
+  assert.equal(result.candidates.find((item) => item.publishable).topic, 'Novo cessar fogo foi confirmado hoje');
+  assert.ok(result.candidates.filter((item) => !item.publishable).every((item) => item.blockedReasons.includes('URGENT_SOURCE_EXPIRED_OR_UNDATED')));
+});
+
+test('Scrapling failure is handled immediately while other lanes run and remains visible in progress', async (t) => {
+  const events = [];
+  const result = await research(t, {
+    config: { scraplingSourcesEnabled: true }, onProgress: (event) => events.push(event),
+    scraplingImpl: async () => { throw Object.assign(new Error('failed'), { code: 'SCRAPLING_TIMEOUT' }); },
+    runImpl: async () => { await new Promise((resolve) => setTimeout(resolve, 20)); return { stdout: '{"results":[]}' }; },
+  });
+  assert.ok(events.some((event) => event.type === 'scrapling_failed' && event.code === 'SCRAPLING_TIMEOUT'));
+  assert.ok(result.warnings.some((warning) => warning.code === 'SCRAPLING_TIMEOUT'));
+  assert.ok(result.warnings.some((warning) => warning.code === 'FACEBOOK_POSTS_UNAVAILABLE'));
+});
+
+test('urgent verified claims are blocked when retrieved evidence is older than 24 hours', async () => {
+  const item = candidate('news', { title: 'OpenAI anuncia um novo modelo' });
+  item.topic = 'OpenAI anuncia um novo modelo';
+  const result = await check(item, verified([evidence(undefined, { publishedAt: '2026-09-22T12:00:00Z' })]));
+  assert.equal(result.publishable, false);
+  assert.ok(result.blockedReasons.includes('URGENT_SOURCE_EXPIRED_OR_UNDATED'));
+});
 
 test('discovery is candidate evidence, never manufactured factual proof or per-URL engagement', () => {
   const [item] = normalizeReport({ kind: 'discovery', results: [{ topic: 'IA descobre animal', why_spiking: 'viral', velocity_score: 82, corroboration_count: 9, published_at: current, evidence_urls: ['https://a.test/article', 'https://b.test/article'], engagement: { hackernews: { points: 120 } } }] }, now, 15);
@@ -141,8 +204,9 @@ test('verification evaluates fetched timestamps after work completes', async () 
 test('research combines 1-day breaking news, 7-day trends and 30-day evergreen discovery lanes', async (t) => {
   const calls = [];
   const result = await research(t, { runImpl: async (call) => { calls.push(call); return { stdout: JSON.stringify({ results: [] }), stderr: '' }; } });
-  assert.equal(calls.length, 14);
-  assert.equal(calls.filter((call) => call.args.includes('--days=1')).length, 3);
+  assert.equal(calls.length, 15);
+  assert.equal(calls.filter((call) => call.args.includes('--days=1')).length, 4);
+  assert.ok(calls.some((call) => call.args[0].includes('military war') && call.args.includes('--days=1')));
   assert.equal(calls.filter((call) => call.args.includes('--days=7')).length, 5);
   assert.equal(calls.filter((call) => call.args.includes('--days=30')).length, 6);
   for (const call of calls) {
@@ -162,22 +226,43 @@ test('research combines 1-day breaking news, 7-day trends and 30-day evergreen d
   assert.ok(result.warnings.some((warning) => warning.code === 'INSUFFICIENT_NEWS'));
 });
 
+test('repeated and concurrent searches never reuse engine output filenames', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'vvc-research-output-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const outputs = new Set();
+  const runImpl = async ({ args, env }) => {
+    const output = args[args.indexOf('--save-dir') + 1];
+    assert.ok(output.startsWith(join(dir, 'run-')));
+    assert.equal(env.LAST30DAYS_MEMORY_DIR, dir);
+    // Mimic the engine refusing to overwrite an existing report filename.
+    await writeFile(join(output, 'same-date-and-topic.json'), '{}', { flag: 'wx' });
+    outputs.add(output);
+    return { stdout: JSON.stringify({ results: [flat()] }), stderr: '' };
+  };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = await researchTopics({ last30daysDir: dir, pythonBin: 'python3', researchTimeoutMs: 1000 }, { now, runImpl });
+    assert.equal(result.coverage.length, 15);
+    assert.ok(!result.warnings.some((warning) => warning.code === 'RESEARCH_FAILED'));
+  }
+  assert.equal(outputs.size, 30);
+});
+
 test('cross-search duplicates merge evidence and preserve explicit topical category', async (t) => {
   const result = await research(t, { runImpl: async ({ args }) => ({ stdout: JSON.stringify(args[0] === '--discover'
     ? { topics: [{ name: 'Animal repetido', evidence_urls: ['https://www.reddit.com/r/science/a?utm_source=example'] }] }
     : { results: [flat('Outro título para o mesmo animal', { url: 'https://reddit.com/r/science/a' })] }), stderr: '' }) });
-  assert.equal(result.counts.discovered, 14);
+  assert.equal(result.counts.discovered, 15);
   assert.equal(result.counts.unique, 1);
   assert.equal(result.candidates[0].sources.length, 1);
   assert.equal(result.candidates[0].sources[0].text, 'Discussão recente do tema.');
   assert.equal(result.candidates[0].trend.hasRecentSignal, true);
   assert.equal(result.candidates[0].category, 'curiosity');
-  assert.equal(result.candidates[0].raw.searches.length, 14);
+  assert.equal(result.candidates[0].raw.searches.length, 15);
 });
 
 test('truncation is fair across categories and searches and counts only verified items as available', async (t) => {
   const result = await research(t, { runImpl: async ({ args }) => ({ stdout: JSON.stringify({ results: Array.from({ length: 50 }, (_, index) => flat(`${args[0]} item ${index}`)) }), stderr: '' }) });
-  assert.equal(result.counts.discovered, 700);
+  assert.equal(result.counts.discovered, 750);
   assert.equal(result.candidates.length, 24);
   assert.equal(result.counts.retainedByCategory.news, 12);
   assert.equal(result.counts.retainedByCategory.curiosity, 12);

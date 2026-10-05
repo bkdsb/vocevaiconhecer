@@ -90,7 +90,7 @@ function imageFromBytes(bytes) {
 }
 
 /** Meta Pages adapter. This module never retries writes or logs remote bodies. */
-export function createMetaProvider(config, { fetchImpl = globalThis.fetch } = {}) {
+export function createMetaProvider(config, { fetchImpl = globalThis.fetch, now = () => new Date() } = {}) {
   const version = config.metaApiVersion ?? 'v26.0';
   if (!/^v[1-9]\d{0,2}\.0$/.test(version)) {
     fail('META_CONFIG', 'Versão da Graph API inválida.');
@@ -185,6 +185,30 @@ export function createMetaProvider(config, { fetchImpl = globalThis.fetch } = {}
     return { accessToken: data.access_token, expiresIn };
   }
 
+  async function listPostEdge({ pageId, pageToken, limit = 100 }, edge, fields) {
+    const id = identifier(pageId, 'Page ID');
+    const token = secret(pageToken, 'Page Access Token');
+    if (!Number.isInteger(limit) || limit < 1 || limit > 1000) fail('META_INVALID_INPUT', 'Limite de posts inválido.');
+    const out = []; const cursors = new Set(); let after;
+    for (let page = 0; page < 100 && out.length < limit; page += 1) {
+      const data = await request(`${id}/${edge}`, { token, query: { fields, limit: Math.min(100, limit - out.length), ...(after ? { after } : {}) } });
+      if (!Array.isArray(data.data)) invalidResponse();
+      for (const item of data.data) {
+        if (!object(item) || typeof item.id !== 'string' || !/^[1-9]\d{0,39}(?:_[1-9]\d{0,39})?$/.test(item.id)) invalidResponse();
+        out.push(item);
+        if (out.length >= limit) break;
+      }
+      if (!data.paging?.next || out.length >= limit) return out;
+      let next; try { next = new URL(data.paging.next); } catch { invalidResponse(); }
+      if (next.origin !== GRAPH_ORIGIN || next.pathname !== `/${version}/${id}/${edge}` || next.username || next.password) invalidResponse();
+      after = data.paging?.cursors?.after ?? next.searchParams.get('after');
+      if (typeof after !== 'string' || !after || after.length > 4096 || cursors.has(after)) invalidResponse();
+      cursors.add(after);
+    }
+    if (out.length < limit) invalidResponse();
+    return out;
+  }
+
   return {
     authorizationUrl(state) {
       if (typeof state !== 'string' || !/^[A-Za-z0-9_-]{24,512}$/.test(state)) {
@@ -265,23 +289,23 @@ export function createMetaProvider(config, { fetchImpl = globalThis.fetch } = {}
     },
 
     async listPublishedPosts({ pageId, pageToken, limit = 100 }) {
-      const id = identifier(pageId, 'Page ID');
-      const token = secret(pageToken, 'Page Access Token');
-      const out = [];
-      let after;
-      while (out.length < limit) {
-        const data = await request(`${id}/published_posts`, { token, query: { fields: 'id,message,created_time', limit: Math.min(100, limit - out.length), ...(after ? { after } : {}) } });
-        if (!Array.isArray(data.data)) invalidResponse();
-        for (const item of data.data) {
-          if (!object(item) || typeof item.id !== 'string') continue;
-          out.push({ id: item.id, message: typeof item.message === 'string' ? item.message : '', createdTime: item.created_time || null });
-          if (out.length >= limit) break;
-        }
-        if (!data.paging?.next) break;
-        after = data.paging?.cursors?.after;
-        if (typeof after !== 'string' || !after) break;
-      }
-      return out;
+      return (await listPostEdge({ pageId, pageToken, limit }, 'published_posts', 'id,message,created_time')).map((item) => ({ id: item.id, message: typeof item.message === 'string' ? item.message : '', createdTime: item.created_time || null }));
+    },
+
+    async listScheduledPosts({ pageId, pageToken, limit = 100 }) {
+      return (await listPostEdge({ pageId, pageToken, limit }, 'scheduled_posts', 'id,scheduled_publish_time,is_published')).map((item) => {
+        if (!Number.isSafeInteger(item.scheduled_publish_time) || item.scheduled_publish_time <= 0 || item.is_published !== false) invalidResponse();
+        return { id: item.id, scheduledAt: new Date(item.scheduled_publish_time * 1000).toISOString(), isPublished: false };
+      });
+    },
+
+    async getPostStatus({ postId, pageToken }) {
+      if (typeof postId !== 'string' || !/^[1-9]\d{0,39}(?:_[1-9]\d{0,39})?$/.test(postId)) fail('META_INVALID_INPUT', 'Post ID inválido.');
+      const data = await request(postId, { token: secret(pageToken, 'Page Access Token'), query: { fields: 'id,is_published,scheduled_publish_time,created_time' } });
+      if (data.id !== postId || typeof data.is_published !== 'boolean') invalidResponse();
+      const seconds = data.scheduled_publish_time;
+      if (seconds !== undefined && (!Number.isSafeInteger(seconds) || seconds < 0)) invalidResponse();
+      return { id: data.id, isPublished: data.is_published, scheduledAt: seconds ? new Date(seconds * 1000).toISOString() : null, createdTime: data.created_time || null };
     },
 
     async verifyPage({ pageId, pageToken }) {
@@ -340,11 +364,18 @@ export function createMetaProvider(config, { fetchImpl = globalThis.fetch } = {}
       return { mediaViews: mediaViews || 0, uniqueViews: uniqueViews || 0, reactions, comments, shares, engagementAvailable, insightsAvailable: mediaViews !== null || uniqueViews !== null };
     },
 
-    async publishPhoto({ pageId, pageToken, imageBuffer, imagePath, caption, published = true }) {
+    async publishPhoto({ pageId, pageToken, imageBuffer, imagePath, caption, published = true, scheduledPublishTime = null }) {
       identifier(pageId, 'Page ID');
       secret(pageToken, 'Page Access Token');
       if (typeof caption !== 'string' || !caption.trim() || caption.length > 63_206 || typeof published !== 'boolean') {
         fail('META_INVALID_INPUT', 'Legenda ou modo de publicação inválido.');
+      }
+      let scheduledSeconds = null;
+      if (scheduledPublishTime !== null) {
+        const milliseconds = typeof scheduledPublishTime === 'string' ? Date.parse(scheduledPublishTime) : NaN;
+        const gap = milliseconds - now().getTime();
+        if (!Number.isFinite(milliseconds) || gap < 10 * 60_000 || gap > 30 * 24 * 60 * 60_000) fail('META_INVALID_INPUT', 'Agende entre 10 minutos e 30 dias a partir de agora.');
+        scheduledSeconds = Math.floor(milliseconds / 1000);
       }
       // The workflow hashes these exact bytes before claiming publication. Never
       // reopen the path when a verified buffer was supplied: the file can change.
@@ -352,13 +383,26 @@ export function createMetaProvider(config, { fetchImpl = globalThis.fetch } = {}
       const body = new FormData();
       body.set('source', new Blob([image.bytes], { type: image.type }), image.name);
       body.set('caption', caption);
-      body.set('published', String(published));
+      body.set('published', scheduledSeconds ? 'false' : String(published));
       const data = await request(`${pageId}/photos`, { token: pageToken, body, publication: true });
       if (typeof data.id !== 'string' || !/^[1-9]\d{0,39}$/.test(data.id)
         || (data.post_id !== undefined && (typeof data.post_id !== 'string' || !/^[1-9]\d{0,39}(?:_[1-9]\d{0,39})?$/.test(data.post_id)))) {
         fail('PUBLICATION_UNKNOWN', 'A Meta não confirmou o ID da publicação. Confira a Página antes de repetir.');
       }
-      return { id: data.id, postId: data.post_id ?? null };
+      if (!scheduledSeconds) return { id: data.id, postId: data.post_id ?? null };
+      // An unpublished photo ID is not a scheduled Page post. Create the feed
+      // entry explicitly; the workflow keeps a durable claim across both writes.
+      const schedule = new FormData();
+      schedule.set('message', caption);
+      schedule.set('attached_media', JSON.stringify([{ media_fbid: data.id }]));
+      schedule.set('published', 'false');
+      schedule.set('scheduled_publish_time', String(scheduledSeconds));
+      schedule.set('unpublished_content_type', 'SCHEDULED');
+      let post;
+      try { post = await request(`${pageId}/feed`, { token: pageToken, body: schedule, publication: true }); }
+      catch (error) { if (error instanceof MetaProviderError) error.photoId = data.id; throw error; }
+      if (typeof post.id !== 'string' || !/^[1-9]\d{0,39}(?:_[1-9]\d{0,39})?$/.test(post.id)) fail('PUBLICATION_UNKNOWN', 'A Meta não confirmou o post agendado. Confira a Página antes de repetir.');
+      return { id: data.id, postId: post.id };
     },
   };
 }

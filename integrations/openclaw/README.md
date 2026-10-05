@@ -5,12 +5,14 @@ Este plugin usa o hook `inbound_claim` do OpenClaw para capturar somente comando
 Comandos aceitos:
 
 - `STATUS`
-- `APROVAR <post_id> <versao_8_caracteres>`
-- `REJEITAR <post_id>`
+- `APROVO 0302` ou `APROVAR #0302` (código mostrado na prévia)
+- `REJEITO 0302` ou `REJEITAR #0302`
+- `APROVAR <post_id> <versao_8_caracteres>` (formato técnico)
 - `PAUSAR`
 - `RETOMAR`
 
 O plugin nunca publica por conta própria. A publicação continua protegida por aprovação, token da Página e `META_PUBLISH_ENABLED`.
+Uma aprovação repetida confirma o estado e o horário existentes, sem reagendar.
 
 ## Instalação no servidor
 

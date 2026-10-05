@@ -1,10 +1,10 @@
-import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
+import { createInboundHandler } from './handler.js';
+import { translateRuntimeReply } from './replies.js';
 
-const COMMAND = /^(?:\/vvc\s+)?(?:status|aprovar\s+\S+(?:\s+\S+)?|rejeitar\s+\S+(?:\s+\S+)?|pausar|retomar)(?:\s+[^\n]*)?$/i;
 const LOCAL_TOKEN_FILE = resolve(dirname(fileURLToPath(import.meta.url)), '../../.bridge-token');
 
 function bridgeToken() {
@@ -19,36 +19,20 @@ function bridgeToken() {
   return '';
 }
 
-function replyText(payload) {
-  if (typeof payload?.text === 'string' && payload.text) return payload.text;
-  if (typeof payload?.error === 'string') return `Comando rejeitado: ${payload.error}`;
-  return 'Comando processado.';
-}
-
 export default definePluginEntry({
   id: 'vvc-auto-post',
   name: 'Você Vai Conhecer — Auto Post',
   description: 'Encaminha comandos de aprovação do WhatsApp para o orquestrador de posts.',
   register(api) {
-    api.on('inbound_claim', async (event, context) => {
-      if (String(event.channel || '').toLowerCase() !== 'whatsapp') return;
-      const text = String(event.content || event.bodyForAgent || event.body || '').trim();
-      if (!COMMAND.test(text)) return;
-      const token = bridgeToken();
-      if (!token) return { handled: true, reply: { text: 'Ponte VVC indisponível: token não configurado.' } };
-      const sender = String(event.senderId || context.senderId || '').trim();
-      const messageId = String(event.messageId || context.messageId || randomUUID());
-      try {
-        const response = await fetch(process.env.VVC_BRIDGE_URL || 'http://127.0.0.1:8790/internal/command', {
-          method: 'POST',
-          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-          body: JSON.stringify({ sender, channel: event.channel, text, messageId }),
-          signal: AbortSignal.timeout(10_000),
-        });
-        const payload = await response.json().catch(() => ({}));
-        return { handled: true, reply: { text: replyText(payload) } };
-      } catch {
-        return { handled: true, reply: { text: 'Não consegui falar com o orquestrador VVC. Tente novamente em alguns segundos.' } };
+    api.on('message_sending', translateRuntimeReply);
+    const handle = createInboundHandler({ getToken: bridgeToken });
+    api.on('inbound_claim', handle);
+    // Current OpenClaw invokes inbound_claim only for plugin-owned bindings.
+    // Ordinary WhatsApp DMs pass through before_dispatch instead.
+    api.on('before_dispatch', async (event, context) => {
+      const result = await handle(event, context);
+      if (result?.handled) {
+        return { handled: true, replyPayloads: [result.reply] };
       }
     });
   },

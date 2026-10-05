@@ -128,6 +128,101 @@ test('publishing already approved posts is independent of automatic generation o
   assert.equal(result.generation.skipped, 'generation_disabled');
 });
 
+test('default generation dispatches only topic research for the first uncovered day without constructing AI providers', async () => {
+  const calls = [];
+  const result = await workerTick({
+    config: { ...config, generationEnabled: true, coverageDaysAhead: 1 }, now,
+    store: { dayCoverage: (day) => ({ day, status: day === '2026-09-25' ? 'scheduled' : 'missing', total: day === '2026-09-25' ? 8 : 0, rejected: 0 }) },
+    makeAI: never, makeMessenger: never, retryState: new Map(), listTasks: async () => [], listPlans: async () => [],
+    dispatchTask: async (args) => { calls.push(args); return { jobId: 'job1', status: 'queued' }; }, log: () => {},
+  });
+  assert.equal(result.generation.jobId, 'job1'); assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, 'research'); assert.deepEqual(calls[0].args, ['--target-day', '2026-09-26']);
+});
+
+test('an active supervised batch skips generation while the worker continues publication', async () => {
+  let publications = 0;
+  const result = await workerTick({
+    config: { ...config, generationEnabled: true, metaPublishEnabled: true }, now,
+    store: { recoverStaleGenerating: never, dayCoverage: never },
+    makeMeta: () => ({}), publish: async () => { publications++; return { published: 1 }; },
+    makeAI: never, makeMessenger: never, dispatchTask: never,
+    listTasks: async () => [{ id: 'running-job', command: 'batch', status: 'running' }], log: () => {},
+  });
+  assert.equal(publications, 1); assert.equal(result.generation.skipped, 'topic_task_active'); assert.equal(result.generation.jobId, 'running-job');
+});
+
+test('persisted partial batch result restores retry delay after restart and then retries safely', async () => {
+  const retryState = new Map(); let dispatched = 0;
+  const options = {
+    config: { ...config, generationEnabled: true, researchRetryMinutes: 90 }, now,
+    store: { dayCoverage: (day) => ({ day, batchId: 'reserved', status: 'blocked', total: 5, rejected: 0, warning: 'Pesquisa incompleta' }) },
+    retryState, makeAI: never, makeMessenger: never, listPlans: async () => [],
+    listTasks: async () => [{ id: 'done', command: 'batch', targetDay: '2026-09-25', status: 'completed', finishedAt: now.toISOString(), resultSummary: { limited: true, remaining: { curiosity: 1, news: 2 } } }],
+    dispatchTask: async () => { dispatched++; return { jobId: 'retry', status: 'queued' }; }, log: () => {},
+  };
+  assert.equal((await workerTick(options)).generation.skipped, 'coverage_complete'); assert.equal(dispatched, 0);
+  assert.equal(retryState.get('day:2026-09-25'), now.getTime() + 90 * 60_000);
+  const retried = await workerTick({ ...options, now: new Date(now.getTime() + 91 * 60_000) });
+  assert.equal(retried.generation.jobId, 'retry'); assert.equal(dispatched, 1);
+});
+
+test('failed task before database reservation backs off the missing day instead of respawning each tick', async () => {
+  const result = await workerTick({
+    config: { ...config, generationEnabled: true }, now, retryState: new Map(),
+    store: { dayCoverage: (day) => ({ day, status: 'missing', total: 0, rejected: 0 }) },
+    listTasks: async () => [{ id: 'failed', command: 'research', targetDay: '2026-09-25', status: 'failed', finishedAt: now.toISOString() }], listPlans: async () => [],
+    dispatchTask: never, makeAI: never, makeMessenger: never, log: () => {},
+  });
+  assert.equal(result.generation.skipped, 'coverage_complete');
+});
+
+test('pending or approved topic plans prevent repeating research and never trigger automatic images', async () => {
+  for (const status of ['pending', 'approved']) {
+    const result = await workerTick({
+      config: { ...config, generationEnabled: true }, now, retryState: new Map(),
+      store: { dayCoverage: (day) => ({ day, status: 'missing', total: 0, rejected: 0 }) },
+      listTasks: async () => [], listPlans: async () => [{ id: '1234abcd', targetDay: '2026-09-25', status }],
+      dispatchTask: never, makeAI: never, makeMessenger: never, log: () => {},
+    });
+    assert.equal(result.generation.skipped, 'awaiting_topic_approval');
+  }
+});
+
+test('an awaiting plan today or earlier prevents researching tomorrow before filling today', async () => {
+  for (const targetDay of ['2026-09-24', '2026-09-25']) {
+    const result = await workerTick({
+      config: { ...config, generationEnabled: true, coverageDaysAhead: 2 }, now, retryState: new Map(),
+      store: { dayCoverage: (day) => ({ day, status: 'missing', total: 0, rejected: 0 }) },
+      listTasks: async () => [], listPlans: async () => [{ id: '1234abcd', targetDay, status: 'pending' }],
+      dispatchTask: never, makeAI: never, makeMessenger: never, log: () => {},
+    });
+    assert.equal(result.generation.skipped, 'awaiting_topic_approval'); assert.equal(result.generation.targetDay, targetDay);
+  }
+});
+
+test('consumed partial plan releases today for researching missing topics before tomorrow', async () => {
+  const result = await workerTick({
+    config: { ...config, generationEnabled: true, coverageDaysAhead: 2 }, now, retryState: new Map(),
+    store: { dayCoverage: (day) => ({ day, status: day === '2026-09-25' ? 'pending_approval' : 'missing', total: day === '2026-09-25' ? 3 : 0, rejected: 0 }) },
+    listTasks: async () => [], listPlans: async () => [{ id: '1234abcd', targetDay: '2026-09-25', status: 'consumed' }],
+    dispatchTask: async ({ command, args }) => { assert.equal(command, 'research'); assert.deepEqual(args, ['--target-day', '2026-09-25']); return { jobId: 'today-repair', status: 'queued' }; },
+    makeAI: never, makeMessenger: never, log: () => {},
+  });
+  assert.equal(result.generation.jobId, 'today-repair');
+});
+
+test('automatic topic research can run without any image or text AI configured', async () => {
+  const result = await workerTick({
+    config: { ...config, generationEnabled: true, openclawAiEnabled: false }, now, retryState: new Map(),
+    store: { dayCoverage: (day) => ({ day, status: 'missing', total: 0, rejected: 0 }) },
+    listTasks: async () => [], listPlans: async () => [],
+    dispatchTask: async ({ command }) => { assert.equal(command, 'research'); return { jobId: 'research-only', status: 'queued' }; },
+    makeAI: never, makeMessenger: never, log: () => {},
+  });
+  assert.equal(result.generation.jobId, 'research-only');
+});
+
 test('serial loop does not overlap long ticks and stop waits for current task', async () => {
   let release, entered, count = 0, stopped = false;
   const started = new Promise((resolve) => { entered = resolve; });

@@ -19,7 +19,7 @@ const raster = () => sharp({ create: { width: 32, height: 48, channels: 3, backg
 const imagePreflight = (args) => {
   if (args[0] === 'models' && args[1] === 'auth') return { profiles: [{ provider: 'openai', type: 'oauth' }] };
   if (args[0] !== 'config') return null;
-  return args[2] === 'agents.defaults.imageModel' ? { primary: 'openai/gpt-image-2', fallbacks: [] } : { providers: {} };
+  return args[2] === 'agents.defaults.mediaModels.image' ? { primary: 'openai/gpt-image-2', fallbacks: [] } : { providers: {} };
 };
 
 test('Cloudflare remains explicit opt-in and rejects unapproved models', () => {
@@ -236,31 +236,63 @@ test('native image preflight refuses API credentials or fallback routes before g
   t.after(() => rm(root, { recursive: true, force: true }));
   for (const scenario of ['fallback', 'api-override', 'api-auth', 'missing-auth']) {
     let generated = false;
+    let alternateCalled = false;
     const execFileImpl = (_bin, args, _options, callback) => {
       let response = imagePreflight(args);
       if (args[0] === 'infer') generated = true;
-      if (scenario === 'fallback' && args[2] === 'agents.defaults.imageModel') response = { primary: 'openai/gpt-image-2', fallbacks: ['other/image'] };
+      if (scenario === 'fallback' && args[2] === 'agents.defaults.mediaModels.image') response = { primary: 'openai/gpt-image-2', fallbacks: ['other/image'] };
       if (scenario === 'api-override' && args[2] === 'models') response = { providers: { openai: { api: 'openai-responses' } } };
       if (args[0] === 'models' && scenario === 'api-auth') response = { profiles: [{ provider: 'openai', type: 'api_key' }] };
       if (args[0] === 'models' && scenario === 'missing-auth') response = { profiles: [] };
       callback(null, JSON.stringify(response), '');
     };
-    await assert.rejects(createOpenClawAIProvider({ ...openclaw, openclawMediaDir: root }, { execFileImpl }).generateImage({ prompt: 'fish' }), { code: 'AI_NOT_CONFIGURED' });
+    await assert.rejects(createOpenClawAIProvider({ ...openclaw, openclawMediaDir: root }, { execFileImpl, env: {}, fetchImpl: async () => { alternateCalled = true; throw new Error('unexpected network'); } }).generateImage({ prompt: 'fish' }), { code: 'AI_NOT_CONFIGURED' });
     assert.equal(generated, false, scenario);
+    assert.equal(alternateCalled, false, scenario);
   }
 });
 
-test('native image checks reported winner and refuses failed or multiple outputs', async (t) => {
+test('native image checks reported winner and refuses alternate or malformed outputs', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'vvc-ai-result-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const changes = [{ provider: 'other' }, { model: 'paid/image' }, { attempts: [{ provider: 'other', model: 'image' }] }, { ok: false, error: 'rate limit quota reached' }, { outputs: [] }];
+  const changes = [{ provider: 'other' }, { model: 'paid/image' }, { ok: false, provider: 'other', error: 'quota reached' }, { attempts: [{ provider: 'other', model: 'image' }] }, { attempts: undefined }, { outputs: [] }, { outputs: [{ path: '/unexpected/path.png' }] }];
   for (const change of changes) {
+    let alternateCalled = false;
     const execFileImpl = (_bin, args, _options, callback) => {
       const preflight = imagePreflight(args);
       if (preflight) { callback(null, JSON.stringify(preflight), ''); return; }
       const path = args[args.indexOf('--output') + 1];
       callback(null, JSON.stringify({ ok: true, capability: 'image.generate', provider: 'openai', model: 'gpt-image-2', attempts: [], outputs: [{ path }], ...change }), '');
     };
-    await assert.rejects(createOpenClawAIProvider({ ...openclaw, openclawMediaDir: root }, { execFileImpl }).generateImage({ prompt: 'fish' }));
+    const expectedCode = 'outputs' in change ? 'AI_INVALID_RESPONSE' : 'AI_MODEL_MISMATCH';
+    await assert.rejects(createOpenClawAIProvider({ ...openclaw, openclawMediaDir: root }, { execFileImpl, env: {}, fetchImpl: async () => { alternateCalled = true; throw new Error('unexpected network'); } }).generateImage({ prompt: 'fish' }), { code: expectedCode });
+    assert.equal(alternateCalled, false);
+  }
+});
+
+test('image quota or unavailable pauses without invoking any unverified free service', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'vvc-ai-fallback-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const failure of ['rate limit quota reached', 'generation unavailable']) {
+    const calls = [];
+    const execFileImpl = (_bin, args, _options, callback) => callback(null, JSON.stringify(imagePreflight(args) || { ok: false, capability: 'image.generate', error: failure }), '');
+    const fetchImpl = async (...args) => { calls.push(args); throw new Error('must not call a billed or unverified route'); };
+    // A stale user-declared flag cannot grant an entitlement absent from pricing.
+    const env = { GEMINI_IMAGE_MODEL: 'gemini-3.1-flash-image', GEMINI_IMAGE_FREE_TIER_CONFIRMED: 'true', GEMINI_API_KEY: 'private-key', POLLINATIONS_API_KEY: 'private-key' };
+    await assert.rejects(createOpenClawAIProvider({ ...openclaw, openclawMediaDir: root }, { execFileImpl, fetchImpl, env }).generateImage({ prompt: 'fish' }), { code: 'AI_IMAGE_FREE_UNAVAILABLE' });
+    assert.equal(calls.length, 0);
+  }
+});
+
+test('image waiting status never exposes private provider response details', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'vvc-ai-fallback-errors-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const execFileImpl = (_bin, args, _options, callback) => callback(null, JSON.stringify(imagePreflight(args) || { ok: false, capability: 'image.generate', error: 'quota reached' }), '');
+  for (const fetchImpl of [async () => new Response('private-detail', { status: 429 }), async () => { throw new Error('private-detail'); }]) {
+    await assert.rejects(createOpenClawAIProvider({ ...openclaw, openclawMediaDir: root }, { execFileImpl, fetchImpl, env: {} }).generateImage({ prompt: 'fish' }), (error) => {
+      assert.equal(error.code, 'AI_IMAGE_FREE_UNAVAILABLE');
+      assert.doesNotMatch(error.message, /private-detail/u);
+      return true;
+    });
   }
 });

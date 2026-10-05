@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { validateEditorialDecisions } from './editorial-selection.js';
+import { freshEnoughForPublication, requiresOneDayFreshness } from './freshness.js';
 
 const NEWS_WORDS = /\b(ai|ia|tecnologia|technology|tech|medicina|medicine|science|research|breakthrough|pesquisa|descoberta|inovação|innovation|robô|robot|computador|saúde|nasa|vacina|tratamento|chip|neural|quantum|energia|guerra|war|military|army|missile|ceasefire)\b|cient[íi]fic|m[ée]dic|astronom|pol[ií]tic|militar|bombarde/iu;
 const COUNTER_NAMES = /^(score|points|likes|reposts|retweets|shares|comments|num_comments|views|view_count|like_count|comment_count|postCount|uniqueAuthors|upvotes|votes|favorites)$/i;
@@ -71,6 +73,7 @@ function normalizeReport(report, now, days) {
   const discovery = report?.kind === 'discovery' || Array.isArray(report?.topics);
   const candidates = [];
   for (const result of results) {
+    if (!result || typeof result !== 'object') continue;
     const topic = String(result.topic || result.title || result.name || '').replace(/\s+/gu, ' ').trim();
     if (!topic) continue;
     const query = report.query || report.searchLabel || '';
@@ -157,6 +160,7 @@ export async function verifyCandidates(candidates, { verifyImpl, now = new Date(
     const trend = refreshTrend(candidate, checkedAt, windowDays);
     // Trend signal is informational for curiosities, only block news without any signal
     if (!trend.hasRecentSignal && candidate.category === 'news') blockedReasons.push('NO_RECENT_DATED_TREND_SIGNAL');
+    if (!freshEnoughForPublication({ ...candidate, sources: citedSources }, checkedAt)) blockedReasons.push('URGENT_SOURCE_EXPIRED_OR_UNDATED');
     const reasons = [...new Set(blockedReasons)];
     output.push({ ...candidate, discoverySources: candidate.discoverySources || candidate.sources, sources: citedSources, trend,
       evidenceStatus: reasons.length ? 'blocked' : 'verified', publishable: reasons.length === 0, blockedReasons: reasons,
@@ -174,7 +178,9 @@ function mergeCandidates(groups, now, days) {
     for (const group of groups) {
       const candidate = group[index]; if (!candidate) continue;
       const topic = candidate.topic.toLocaleLowerCase('pt-BR');
-      const prior = topicIndex.get(topic) || candidate.sources.map((source) => urlIndex.get(source.url)).find(Boolean);
+      // A page URL identifies a profile, not an individual story. Different
+      // public posts from that page must not collapse into a single candidate.
+      const prior = topicIndex.get(topic) || candidate.sources.filter((source) => source.provenance?.kind !== 'profile-post').map((source) => urlIndex.get(source.url)).find(Boolean);
       const value = prior || candidate;
       if (prior) {
         prior.sources = sourceMap([...prior.sources, ...candidate.sources]);
@@ -184,19 +190,57 @@ function mergeCandidates(groups, now, days) {
         prior.blockedReasons = ['EDITORIAL_VERIFICATION_REQUIRED', ...(prior.trend.hasRecentSignal ? [] : ['NO_RECENT_DATED_TREND_SIGNAL']), ...(prior.sources.length ? [] : ['NO_SOURCE_URL'])];
       } else merged.push(value);
       topicIndex.set(topic, value);
-      for (const source of value.sources) urlIndex.set(source.url, value);
+      for (const source of value.sources) if (source.provenance?.kind !== 'profile-post') urlIndex.set(source.url, value);
     }
   }
   return merged;
 }
 
 function fairLimit(candidates, limit) {
-  const groups = ['curiosity', 'news'].map((category) => candidates.filter((candidate) => candidate.category === category));
+  const groups = ['curiosity', 'news'].map((category) => candidates.filter((candidate) => candidate.category === category)
+    .sort((a, b) => Number(b.raw?.inspirationKind === 'facebook') - Number(a.raw?.inspirationKind === 'facebook')
+      || (a.raw?.inspirationKind === 'facebook' && b.raw?.inspirationKind === 'facebook' ? b.trend.rankingScore - a.trend.rankingScore : 0)));
   const output = [];
   for (let index = 0; output.length < limit && index < Math.max(0, ...groups.map((group) => group.length)); index += 1) {
     for (const group of groups) if (group[index] && output.length < limit) output.push(group[index]);
   }
   return output;
+}
+
+function normalizeScraplingProfiles(profiles, now) {
+  return (Array.isArray(profiles) ? profiles : []).flatMap((profile) => {
+    const profileUrl = cleanUrl(profile?.url);
+    if (!profileUrl || !Array.isArray(profile.topics)) return [];
+    return profile.topics.slice(0, 40).flatMap((post) => {
+      const text = (typeof post === 'string' ? post : typeof post?.text === 'string' ? post.text : '').replace(/\s+/gu, ' ').trim();
+      if (!text) return [];
+      // The Python scraper's synthetic score mixes display position and
+      // counters. Only native counters inform ranking, never claimed virality.
+      const metrics = nativeMetrics(post?.metrics);
+      delete metrics.score;
+      const postUrl = cleanUrl(post?.url || post?.postUrl);
+      const url = postUrl || profileUrl;
+      const publishedAt = dateValue(post?.publishedAt || post?.published_at)?.toISOString() || null;
+      const topic = text.slice(0, 500);
+      const rankingScore = Math.log1p(metrics.likes || 0) + 2 * Math.log1p(metrics.comments || 0) + Math.log1p(metrics.shares || 0) + 0.5 * Math.log1p(metrics.views || 0);
+      return [{ topic, headline: topic, text: text.slice(0, 6000), category: requiresOneDayFreshness({ topic, summary: text }) || profile.category === 'news' ? 'news' : 'curiosity',
+        score: rankingScore, metrics, publishedAt, retrievedAt: now.toISOString(), inspirationKind: profile.kind || 'web', inspirationSource: String(profile.source || '').slice(0, 120), inspirationUrl: profileUrl, url,
+        sourceId: idFor('scrapling-source', `${url}\0${text}`), sourceKind: postUrl ? 'source-item' : 'profile-post' }];
+    });
+  }).slice(0, 320);
+}
+
+function scraplingCandidate(post, now) {
+  const candidate = {
+    id: idFor(post.topic, `${post.url}\0${post.sourceId}`), topic: post.topic, category: post.category, summary: post.text,
+    sources: [{ id: post.sourceId, url: post.url, title: post.topic, text: post.text, source: post.inspirationSource, publishedAt: post.publishedAt, metrics: post.metrics, isPrimary: false,
+      provenance: { engine: 'scrapling', kind: post.sourceKind, retrievedAt: post.retrievedAt } }],
+    trend: { score: null, rankingScore: post.score, aggregateMetrics: {} }, evidenceStatus: 'candidate', publishable: false, blockedReasons: ['EDITORIAL_VERIFICATION_REQUIRED'],
+    raw: { engine: 'scrapling', categoryHint: post.category, inspirationKind: post.inspirationKind, inspirationSource: post.inspirationSource, inspirationUrl: post.inspirationUrl, searches: ['scrapling:public-posts'] },
+  };
+  candidate.trend = refreshTrend(candidate, now, 30);
+  if (!candidate.trend.hasRecentSignal) candidate.blockedReasons.push('NO_RECENT_DATED_TREND_SIGNAL');
+  return candidate;
 }
 
 export function runScraplingProfiles({ pythonBin, scriptPath, timeoutMs = 120_000, spawnImpl = spawn } = {}) {
@@ -249,9 +293,15 @@ export async function researchTopics(config, { now = new Date(), clock = () => n
     const searchArgs = [...args];
     searchArgs[searchArgs.indexOf('--save-dir') + 1] = saveDir;
     onProgress({ type: 'research_started', args: searchArgs });
-    const result = await runImpl({ pythonBin: config.pythonBin, scriptPath, args: searchArgs, timeoutMs: config.researchTimeoutMs, env });
-    onProgress({ type: 'research_finished' });
-    return parseJsonOutput(result.stdout);
+    try {
+      const result = await runImpl({ pythonBin: config.pythonBin, scriptPath, args: searchArgs, timeoutMs: config.researchTimeoutMs, env });
+      const report = parseJsonOutput(result.stdout);
+      onProgress({ type: 'research_finished', query: searchArgs[0] });
+      return report;
+    } catch (error) {
+      onProgress({ type: 'research_failed', query: searchArgs[0], code: error?.code || 'RESEARCH_FAILED' });
+      throw error;
+    }
   };
   // Use overlapping discovery lanes. A single provider or niche can degrade
   // without starving the daily queue, while mergeCandidates still collapses
@@ -273,9 +323,16 @@ export async function researchTopics(config, { now = new Date(), clock = () => n
     { label: 'news:brazil-world-1d', categoryHint: 'news', args: ['Brazil world breaking news unusual decision record discovery today', '--emit=json', '--json-profile=raw', '--days=1', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
     { label: 'news:sports-achievement-7d', categoryHint: 'news', args: ['sports record extraordinary achievement Brazilian athlete world championship this week', '--emit=json', '--json-profile=raw', '--days=7', '--no-browser-cookies', '--save-dir', config.last30daysDir] },
   ];
+  // Attach the error handler immediately: discovery lanes may take minutes,
+  // while Scrapling can fail before they finish.
   const scraplingPromise = config.scraplingSourcesEnabled === true
-    ? scraplingImpl({ pythonBin: config.scraplingPython, scriptPath: resolve(process.cwd(), 'scripts/scrapling-sources.py'), timeoutMs: config.scraplingTimeoutMs })
-    : Promise.resolve({ profiles: [], warnings: [] });
+    ? Promise.resolve().then(() => {
+      onProgress({ type: 'scrapling_started' });
+      return scraplingImpl({ pythonBin: config.scraplingPython, scriptPath: fileURLToPath(new URL('../scripts/scrapling-sources.py', import.meta.url)), timeoutMs: config.scraplingTimeoutMs });
+    }).then((result) => { onProgress({ type: 'scrapling_finished' }); return { result }; }, (error) => {
+      onProgress({ type: 'scrapling_failed', code: error?.code || 'SCRAPLING_FAILED' }); return { error };
+    })
+    : Promise.resolve({ result: { profiles: [], warnings: [] } });
   const completed = await Promise.allSettled(jobs.map(async (job) => ({ job, report: await run(job.args) })));
   const reports = [];
   for (const [index, result] of completed.entries()) {
@@ -290,25 +347,13 @@ export async function researchTopics(config, { now = new Date(), clock = () => n
     }
     else warnings.push({ code: result.reason?.code || 'RESEARCH_FAILED', search: jobs[index].label, message: result.reason?.message || 'Pesquisa indisponível.' });
   }
-  let scrapling = { profiles: [], warnings: [] };
-  try { scrapling = await scraplingPromise; }
-  catch (error) { warnings.push({ code: error?.code || 'SCRAPLING_FAILED', message: 'As fontes públicas de inspiração via Scrapling estão temporariamente indisponíveis.' }); }
+  const scraplingOutcome = await scraplingPromise;
+  const scrapling = scraplingOutcome.result || { profiles: [], warnings: [] };
+  if (scraplingOutcome.error) warnings.push({ code: scraplingOutcome.error?.code || 'SCRAPLING_FAILED', message: 'As fontes públicas de inspiração via Scrapling estão temporariamente indisponíveis.' });
   for (const warning of scrapling.warnings || []) warnings.push({ code: 'SCRAPLING_SOURCE_WARNING', source: warning.source, detail: warning.code });
-  const inspirationProfiles = (scrapling.profiles || []).flatMap((profile) => (profile.topics || []).slice(0, 20).map((topic) => ({
-    topic, headline: topic, category: profile.category === 'news' ? 'news' : 'curiosity', score: 0.35, inspirationSource: profile.source, inspirationUrl: profile.url,
-  }))).slice(0, 160);
-  
-  // Transformar inspirações do Facebook em Candidatos Reais (Insights Virais)
-  const scraplingCandidates = inspirationProfiles.map(p => ({
-    id: 'fb-' + Buffer.from(p.headline).toString('base64').substring(0, 10),
-    headline: p.headline,
-    category: p.category,
-    sourceDate: now.toISOString(),
-    retrievedAt: now.toISOString(),
-    sources: [{ url: p.inspirationUrl, status: 'ok', title: 'Facebook Page Insight' }],
-    claims: [{ text: p.headline, sourceIds: [] }],
-    score: 0.95 // Peso máximo para forçar o sistema a usar esses posts
-  }));
+  const inspirationProfiles = normalizeScraplingProfiles(scrapling.profiles, now);
+  const scraplingCandidates = inspirationProfiles.map((post) => scraplingCandidate(post, now));
+  if (config.scraplingSourcesEnabled === true && !inspirationProfiles.some((post) => post.inspirationKind === 'facebook')) warnings.push({ code: 'FACEBOOK_POSTS_UNAVAILABLE', message: 'Nenhum post público das páginas de referência pôde ser recuperado; a pesquisa está usando fontes complementares.' });
   const groups = reports.map((report) => normalizeReport(report, now, 15));
   groups.unshift(scraplingCandidates); // Adiciona as páginas do Facebook como o grupo principal
 
@@ -341,7 +386,13 @@ export async function researchTopics(config, { now = new Date(), clock = () => n
   // allowing relaxed discovery to retain enough unseen alternatives.
   let candidates = fairLimit(eligible, relaxed ? 128 : 24);
   if (relaxed) {
-    candidates = candidates.flatMap((candidate) => candidate.sources.length ? [{ ...candidate, evidenceStatus: 'discovered', publishable: true, blockedReasons: [] }] : []);
+    const checkedAt = clock();
+    candidates = candidates.map((candidate) => {
+      const blockedReasons = [];
+      if (!candidate.sources.some((source) => String(source.text || '').trim())) blockedReasons.push('NO_SOURCE_TEXT');
+      if (!freshEnoughForPublication(candidate, checkedAt)) blockedReasons.push('URGENT_SOURCE_EXPIRED_OR_UNDATED');
+      return { ...candidate, evidenceStatus: blockedReasons.length ? 'blocked' : 'discovered', publishable: blockedReasons.length === 0, blockedReasons };
+    });
   } else if (typeof verifyImpl === 'function') candidates = await verifyCandidates(candidates, { verifyImpl, now, clock, windowDays: 15, onProgress });
   else warnings.push({ code: 'EDITORIAL_VERIFICATION_REQUIRED', message: 'Candidatos pesquisados ainda precisam de fontes recuperadas e verificação editorial antes de gerar posts.' });
   const counts = { discovered: groups.reduce((sum, group) => sum + group.length, 0), unique: unique.length, retained: candidates.length, discoveredByCategory: discoveryCounts,

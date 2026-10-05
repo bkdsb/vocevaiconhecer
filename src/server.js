@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 
-function body(req) { return new Promise((resolve, reject) => { let data = ''; req.on('data', (chunk) => { data += chunk; if (data.length > 256_000) req.destroy(); }); req.on('end', () => { try { resolve(JSON.parse(data || '{}')); } catch { reject(new Error('JSON inválido.')); } }); req.on('error', reject); }); }
+function body(req) { return new Promise((resolve, reject) => { let data = ''; const t = setTimeout(() => { req.destroy(); reject(new Error('Timeout')); }, 5000); req.on('data', (chunk) => { data += chunk; if (data.length > 256_000) req.destroy(); }); req.on('end', () => { clearTimeout(t); try { resolve(JSON.parse(data || '{}')); } catch { reject(new Error('JSON inválido.')); } }); req.on('error', (e) => { clearTimeout(t); reject(e); }); }); }
 function response(res, status, payload) { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(payload)); }
 
 export function createBridgeServer({ config, handleCommand }) {

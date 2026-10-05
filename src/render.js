@@ -17,6 +17,10 @@ const HEIGHT = 1350;
 const MAX_TEXT_WIDTH = 948;
 const MAX_TEXT_HEIGHT = 370;
 const BOTTOM_MARGIN = 76;
+const LOGO_SIZE = 142;
+const LOGO_BORDER_WIDTH = 2;
+const LOGO_LEFT = (WIDTH - LOGO_SIZE) / 2;
+const LOGO_TOP = 41;
 const FONT_PATH = fileURLToPath(new URL('../assets/brand/Montserrat-ExtraBold.ttf', import.meta.url));
 const LOGO_PATH = fileURLToPath(new URL('../assets/brand/logo.png', import.meta.url));
 const LIMIT_INPUT_PIXELS = 50_000_000;
@@ -98,41 +102,55 @@ async function layoutHeadline(words) {
     return cache.get(key);
   };
   const atSize = async (size) => {
-    const lines = [];
-    let current = [];
-    for (const word of words) {
-      const candidate = [...current, word];
-      const pixels = await measured(candidate, size);
-      if (pixels.info.width > MAX_TEXT_WIDTH) {
-        if (!current.length) return null;
-        lines.push(current);
-        current = [word];
-        if ((await measured(current, size)).info.width > MAX_TEXT_WIDTH) return null;
-      } else current = candidate;
-    }
-    if (current.length) lines.push(current);
-    if (lines.length > 5) return null;
-
-    // Avoid a one-word final line when moving a word preserves the fit.
-    if (lines.length > 1 && lines.at(-1).length === 1 && lines.at(-2).length > 2) {
-      const previous = lines.at(-2);
-      const balanced = [previous.at(-1), ...lines.at(-1)];
-      if ((await measured(balanced, size)).info.width <= MAX_TEXT_WIDTH) {
-        previous.pop();
-        lines[lines.length - 1] = balanced;
+    // Measure every contiguous span once, then choose line breaks that keep
+    // the visual block balanced. A greedy wrap can leave a very short last
+    // line even when a nearby break would give the card symmetrical margins.
+    const spans = new Map();
+    const span = async (start, end) => {
+      const key = `${start}:${end}`;
+      if (!spans.has(key)) spans.set(key, measured(words.slice(start, end), size));
+      return spans.get(key);
+    };
+    const partitions = [];
+    const visit = async (start, chosen) => {
+      if (start === words.length) {
+        if (chosen.length) partitions.push(chosen);
+        return;
       }
-    }
-    const rendered = await Promise.all(lines.map((line) => measured(line, size)));
-    const advance = Math.ceil(size * 1.03);
-    const topOffsets = rendered.map((_, index) => index * advance);
-    // Glyphs include accents. Advance is increased only when needed to avoid
-    // touching lines; each line keeps a minimum 8px visual gap.
-    for (let index = 1; index < rendered.length; index += 1) {
-      topOffsets[index] = Math.max(topOffsets[index], topOffsets[index - 1] + rendered[index - 1].info.height + 8);
-    }
-    const height = topOffsets.at(-1) + rendered.at(-1).info.height;
-    if (height > MAX_TEXT_HEIGHT) return null;
-    return { rendered, topOffsets, height };
+      if (chosen.length === 5) return;
+      for (let end = start + 1; end <= words.length; end += 1) {
+        const rendered = await span(start, end);
+        if (rendered.info.width > MAX_TEXT_WIDTH) break;
+        await visit(end, [...chosen, { words: words.slice(start, end), rendered }]);
+      }
+    };
+    await visit(0, []);
+    if (!partitions.length) return null;
+
+    const scored = partitions.map((partition) => {
+      const widths = partition.map(({ rendered }) => rendered.info.width);
+      const average = widths.reduce((sum, width) => sum + width, 0) / widths.length;
+      const range = (Math.max(...widths) - Math.min(...widths)) / Math.max(1, average);
+      const variance = widths.reduce((sum, width) => sum + ((width - average) / Math.max(1, average)) ** 2, 0) / widths.length;
+      const lastLine = partition.at(-1).words;
+      const lonelyLastLine = partition.length > 1 && lastLine.length === 1 ? 0.75 : 0;
+      const lastWidthRatio = widths.at(-1) / Math.max(1, average);
+      const shortLastLine = Math.max(0, 0.82 - lastWidthRatio) * 2.4;
+      // Keep fewer lines when balance is comparable, while strongly preferring
+      // blocks whose left and right edges sit at nearly the same visual width.
+      const score = range * 2.4 + variance * 1.2 + (partition.length - 1) * 0.10 + lonelyLastLine + shortLastLine;
+      const rendered = partition.map(({ rendered: pixels }) => pixels);
+      const topOffsets = [];
+      for (let index = 0; index < rendered.length; index += 1) {
+        topOffsets[index] = index === 0
+          ? 0
+          : Math.max(topOffsets[index - 1] + rendered[index - 1].info.height + 8, index * Math.ceil(size * 1.03));
+      }
+      const height = topOffsets.at(-1) + rendered.at(-1).info.height;
+      return { rendered, topOffsets, height, score, lineCount: partition.length };
+    }).filter((candidate) => candidate.height <= MAX_TEXT_HEIGHT)
+      .sort((left, right) => left.score - right.score);
+    return scored[0] || null;
   };
 
   // Search legible sizes only. Reject impossible headlines instead of clipping,
@@ -146,6 +164,20 @@ async function layoutHeadline(words) {
     if (candidate) { best = candidate; low = middle + 1; } else high = middle - 1;
   }
   if (!best) throw new RangeError('headline não cabe sem cortar o texto; encurte palavras ou o título.');
+
+  // A slightly smaller type can produce a much more even block. Consider a
+  // bounded step down so the renderer does not sacrifice legibility for a
+  // single short tail line, while preserving the largest size when balance is
+  // comparable.
+  const largestSize = high;
+  const minimumBalancedSize = Math.max(34, Math.floor(largestSize * 0.86));
+  for (let size = largestSize - 1; size >= minimumBalancedSize; size -= 1) {
+    const candidate = await atSize(size);
+    if (!candidate || candidate.lineCount >= best.lineCount) continue;
+    const sizeLoss = (largestSize - size) / largestSize;
+    const balanceGain = best.score - candidate.score;
+    if (balanceGain > 0.22 && sizeLoss <= 0.14) best = candidate;
+  }
   return best;
 }
 
@@ -159,19 +191,24 @@ export async function renderPost({ imageBuffer, headline, highlights = [], outpu
   await registerFont();
   const layout = await layoutHeadline(markedWords(title, highlights));
   const logo = await sharp(await readFile(logoPath), { limitInputPixels: LIMIT_INPUT_PIXELS })
-    .resize(142, 142, { fit: 'contain', background: '#FFFFFF' })
-    .composite([{ input: Buffer.from('<svg width="142" height="142"><circle cx="71" cy="71" r="70" fill="white"/></svg>'), blend: 'dest-in' }])
+    // The supplied logo includes transparent margins; size the visible mark itself.
+    .trim({ background: '#00000000', threshold: 0 })
+    .flatten({ background: '#FFFFFF' })
+    .resize(LOGO_SIZE, LOGO_SIZE, { fit: 'contain', background: '#FFFFFF' })
+    .composite([{ input: Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${LOGO_SIZE}" height="${LOGO_SIZE}"><circle cx="${LOGO_SIZE / 2}" cy="${LOGO_SIZE / 2}" r="${LOGO_SIZE / 2}" fill="white"/></svg>`), blend: 'dest-in' }])
     .png().toBuffer();
+  // Draw the thin outline over the full-size white logo, without a yellow backing disc.
+  const logoBorder = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${LOGO_SIZE}" height="${LOGO_SIZE}"><circle cx="${LOGO_SIZE / 2}" cy="${LOGO_SIZE / 2}" r="${(LOGO_SIZE - LOGO_BORDER_WIDTH) / 2}" fill="none" stroke="#F5A900" stroke-width="${LOGO_BORDER_WIDTH}"/></svg>`);
   const overlay = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}">
     <defs><linearGradient id="fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#000" stop-opacity="0"/><stop offset="0.3" stop-color="#000" stop-opacity="0.37"/><stop offset="0.65" stop-color="#000" stop-opacity="0.83"/><stop offset="1" stop-color="#000" stop-opacity="0.97"/></linearGradient></defs>
     <rect x="0" y="730" width="1080" height="620" fill="url(#fade)"/>
     <circle cx="540" cy="118" r="75" fill="#000" opacity="0.18"/>
-    <circle cx="540" cy="112" r="71" fill="none" stroke="#F5A900" stroke-width="2"/>
   </svg>`);
   const textTop = HEIGHT - BOTTOM_MARGIN - layout.height;
   const composite = [
     { input: overlay, left: 0, top: 0 },
-    { input: logo, left: 469, top: 41 },
+    { input: logo, left: LOGO_LEFT, top: LOGO_TOP },
+    { input: logoBorder, left: LOGO_LEFT, top: LOGO_TOP },
     ...layout.rendered.map(({ data, info }, index) => ({ input: data, left: Math.round((WIDTH - info.width) / 2), top: textTop + layout.topOffsets[index] })),
   ];
   const path = resolve(outputPath);

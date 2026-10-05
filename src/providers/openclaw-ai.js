@@ -12,8 +12,8 @@ class OpenClawAIError extends Error {
 function fail(code, message) { throw new OpenClawAIError(code, message); }
 const QUOTA = /cooldown|quota|rate[_ -]?limit|usage[_ -]?limit|too many requests|\b429\b|limit.{0,30}(?:reached|exceeded)/iu;
 function unavailable(detail = '') {
-  if (QUOTA.test(String(detail))) fail('AI_QUOTA', 'A assinatura Codex atingiu um limite temporário ou está em cooldown. Tente novamente após a liberação da franquia.');
-  fail('AI_UNAVAILABLE', 'O OpenClaw não concluiu a geração com a conta Codex configurada.');
+  if (QUOTA.test(String(detail))) fail('AI_QUOTA', 'A rota de IA atingiu um limite temporário ou está em cooldown. Aguarde a liberação da franquia.');
+  fail('AI_UNAVAILABLE', 'O OpenClaw não concluiu a geração com os modelos permitidos.');
 }
 
 // Scan balanced JSON values so diagnostic braces, nested objects and quoted
@@ -130,6 +130,8 @@ export function createOpenClawTextRunner(config, { execFileImpl = defaultExecFil
     let lastError;
     for (const model of models) {
       try {
+        // A fresh session plus explicit --model is a strict user override in
+        // OpenClaw. Keep fallback ordering here, never in the agent run itself.
         const stdout = await execute(config, ['agent', '--agent', agent, '--session-key', `agent:${agent}:vvc-ai-${label}-${randomUUID()}`, '--message', message, '--model', model, '--json', '--timeout', '180'], execFileImpl);
         const result = validateEnvelope(parseEnvelope(stdout), model);
         return { ...result, model };
@@ -159,14 +161,13 @@ export function createOpenClawAIProvider(config, dependencies = {}) {
       if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 2000) fail('AI_INVALID_INPUT', 'Prompt da imagem vazio ou acima do limite.');
       const model = config.openclawImageModel || 'openai/gpt-image-2';
       if (!/^openai\/gpt-image-[A-Za-z0-9._-]+$/u.test(model) || !isAbsolute(config.openclawMediaDir || '')) fail('AI_NOT_CONFIGURED', 'Configure o modelo OpenAI de imagem e a pasta absoluta de mídia.');
-      // Preflight before spending any image quota: native infer must have no
-      // fallback and no explicit OpenAI API provider override (a billed route).
+      // A misconfigured billed route must fail before attempting any provider.
       const readConfig = async (key) => {
         const objects = jsonObjects(await execute(config, ['config', 'get', key, '--json'], execFileImpl));
         if (objects.length !== 1) fail('AI_NOT_CONFIGURED', 'Não foi possível confirmar a configuração segura de imagens do OpenClaw.');
         return objects[0];
       };
-      const imageConfig = await readConfig('agents.defaults.imageModel');
+      const imageConfig = await readConfig('agents.defaults.mediaModels.image');
       if (imageConfig.primary !== model || !Array.isArray(imageConfig.fallbacks) || imageConfig.fallbacks.length) fail('AI_NOT_CONFIGURED', 'O modelo de imagem deve ter fallbacks explicitamente vazios.');
       const modelsConfig = await readConfig('models');
       if (Object.keys(modelsConfig.providers?.openai || {}).length) fail('AI_NOT_CONFIGURED', 'Remova o override de API OpenAI para usar exclusivamente a assinatura Codex.');
@@ -175,15 +176,27 @@ export function createOpenClawAIProvider(config, dependencies = {}) {
       await mkdir(config.openclawMediaDir, { recursive: true });
       const id = randomUUID();
       const outputPath = join(config.openclawMediaDir, `${id}.png`);
-      const stdout = await execute(config, ['infer', 'image', 'generate', '--model', model, '--prompt', prompt, '--count', '1', '--size', '1024x1536', '--output-format', 'png', '--output', outputPath, '--timeout-ms', '180000', '--json'], execFileImpl);
-      const envelopes = jsonObjects(stdout).filter((item) => item.capability === 'image.generate');
-      if (envelopes.length !== 1) fail('AI_INVALID_RESPONSE', 'O OpenClaw não confirmou a geração da imagem.');
-      const result = envelopes[0];
-      if (result.ok !== true) unavailable(JSON.stringify(result.error || ''));
-      if (result.provider !== 'openai' || ![model, model.slice('openai/'.length)].includes(result.model) || !Array.isArray(result.attempts) || result.attempts.length) fail('AI_MODEL_MISMATCH', 'A imagem não confirmou o modelo configurado sem alternativas.');
-      if (!Array.isArray(result.outputs) || result.outputs.length !== 1 || typeof result.outputs[0]?.path !== 'string' || resolve(result.outputs[0].path) !== outputPath) fail('AI_INVALID_RESPONSE', 'O OpenClaw deve devolver uma única imagem no arquivo solicitado.');
-      const buffer = await validateRaster(await readMedia(result.outputs[0].path, config.openclawMediaDir), fail);
-      return { buffer, provider: 'openclaw-codex', model, prompt, generatedAt: new Date().toISOString(), id };
+      let generated;
+      try {
+        const stdout = await execute(config, ['infer', 'image', 'generate', '--model', model, '--prompt', prompt, '--count', '1', '--size', '1024x1536', '--output-format', 'png', '--output', outputPath, '--timeout-ms', '180000', '--json'], execFileImpl);
+        const envelopes = jsonObjects(stdout).filter((item) => item.capability === 'image.generate');
+        if (envelopes.length !== 1) fail('AI_INVALID_RESPONSE', 'O OpenClaw não confirmou a geração da imagem.');
+        const result = envelopes[0];
+        if ((result.provider !== undefined && result.provider !== 'openai')
+          || (result.model !== undefined && ![model, model.slice('openai/'.length)].includes(result.model))
+          || (result.attempts !== undefined && (!Array.isArray(result.attempts) || result.attempts.length))) fail('AI_MODEL_MISMATCH', 'A geração tentou uma rota de imagem alternativa.');
+        if (result.ok !== true) unavailable(JSON.stringify(result.error || ''));
+        if (result.provider !== 'openai' || ![model, model.slice('openai/'.length)].includes(result.model) || !Array.isArray(result.attempts) || result.attempts.length) fail('AI_MODEL_MISMATCH', 'A imagem não confirmou o modelo configurado sem alternativas.');
+        if (!Array.isArray(result.outputs) || result.outputs.length !== 1 || typeof result.outputs[0]?.path !== 'string' || resolve(result.outputs[0].path) !== outputPath) fail('AI_INVALID_RESPONSE', 'O OpenClaw deve devolver uma única imagem no arquivo solicitado.');
+        generated = { buffer: await validateRaster(await readMedia(result.outputs[0].path, config.openclawMediaDir), fail), provider: 'openclaw-codex', model };
+      } catch (codexError) {
+        if (!(codexError instanceof OpenClawAIError) || !['AI_QUOTA', 'AI_UNAVAILABLE'].includes(codexError.code)) throw codexError;
+        // Gemini native images currently have no free API tier; Pollinations
+        // now requires a key and a Pollen wallet. A declared env flag does not
+        // prove a zero-cost entitlement, so neither is an automatic fallback.
+        fail('AI_IMAGE_FREE_UNAVAILABLE', 'A imagem está aguardando a franquia Codex. Não há outra rota de imagem com gratuidade comprovada configurada; os temas aprovados foram preservados.');
+      }
+      return { ...generated, prompt, generatedAt: new Date().toISOString(), id };
     },
   };
 }
